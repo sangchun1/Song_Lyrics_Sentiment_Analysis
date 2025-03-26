@@ -1,1 +1,1 @@
-# song_lyrics_analysis
+# 노래 가사를 활용한 감정 분석 시스템 개발
