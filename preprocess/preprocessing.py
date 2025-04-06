@@ -13,13 +13,12 @@ from nltk.tokenize import TreebankWordTokenizer
 # nltk.download("punkt_tab")
 # nltk.download("stopwords")
 
+def load_filler_words(filepath="preprocess/filler_words.txt"):
+    with open(filepath, "r", encoding="utf-8") as f:
+        return set(line.strip() for line in f if line.strip())
+
 custom_stopwords = set(stopwords.words("english"))
-filler_words = {
-    "yeah", "woo", "hey", "oh", "uh", "huh", "la", "na", "ooh",
-    "ah", "yea", "mmm", "woah", "whoa", "ha", "yo", "uhh", "uuh", "aye", "bam",
-    "'m", "'re", "'ve", "'ll", "'s", "'d", "n't"
-}
-custom_stopwords.update(filler_words)
+custom_stopwords.update(load_filler_words())
 
 tokenizer = TreebankWordTokenizer()
 
@@ -138,8 +137,8 @@ def preprocess_genius_dataset(df):
         'year': 'year'
     })
     df = df.dropna(subset=['lyrics', 'year', 'language'])
-    df = df.drop(columns=[col for col in df.columns if col not in ['title', 'artist', 'genre', 'year', 'lyrics', 'language']])
-    df = df[['title', 'artist', 'genre', 'year', 'lyrics', 'language']]
+    df = df.drop(columns=[col for col in df.columns if col not in ['title', 'artist', 'genre', 'views', 'year', 'lyrics', 'language']])
+    df = df[['title', 'artist', 'genre', 'year', 'views', 'lyrics', 'language']]
 
     print("2. 연도 필터링 중...")
     df = filter_by_year_range(df, 1980, 2024)
