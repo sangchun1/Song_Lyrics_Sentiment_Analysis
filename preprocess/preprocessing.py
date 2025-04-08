@@ -5,24 +5,53 @@ import fasttext
 from multiprocessing import Pool, cpu_count
 from nltk.corpus import stopwords
 from nltk.tokenize import TreebankWordTokenizer
+from nltk.stem import WordNetLemmatizer
 
 # ========================
-# NLTK 리소스 다운로드 및 불용어 정의
+# NLTK 리소스 다운로드
 # ========================
 # nltk.download("punkt")
 # nltk.download("punkt_tab")
 # nltk.download("stopwords")
+# nltk.download("wordnet")
+# nltk.download("omw-1.4")
 
-def load_filler_words(filepath="preprocess/filler_words.txt"):
+# ========================
+# 사용자 정의 불용어 로딩
+# ========================
+def load_filler_words(filepath="filler_words.txt"):
     with open(filepath, "r", encoding="utf-8") as f:
         return set(line.strip() for line in f if line.strip())
 
 custom_stopwords = set(stopwords.words("english"))
 custom_stopwords.update(load_filler_words())
 
+# ========================
+# 형태소 분석기, lemmatizer
+# ========================
 tokenizer = TreebankWordTokenizer()
+lemmatizer = WordNetLemmatizer()
 
+# ========================
+# Lemmatization 함수
+# ========================
+def lemmatize_tokens(tokens):
+    return [lemmatizer.lemmatize(token) for token in tokens]
+
+# ========================
+# 형태소 분석 + 불용어 제거 + lemmatization 적용
+# ========================
+def tokenize_and_remove_stopwords(text):
+    if pd.isna(text):
+        return []
+    tokens = tokenizer.tokenize(text)
+    filtered = [w for w in tokens if w.lower() not in custom_stopwords]
+    lemmatized = lemmatize_tokens(filtered)
+    return lemmatized
+
+# ========================
 # fastText 모델 로드
+# ========================
 lang_model = fasttext.load_model("lid.176.bin")
 
 def is_english_fasttext(text):
@@ -32,8 +61,8 @@ def is_english_fasttext(text):
     except:
         return False
 
-def parallel_language_filter(df, text_column):
-    with Pool(cpu_count()) as pool:
+def parallel_language_filter(df, text_column, n_jobs=6):
+    with Pool(n_jobs) as pool:
         results = pool.map(is_english_fasttext, df[text_column])
     return results
 
@@ -52,16 +81,6 @@ def preprocess_lyrics(text):
     text = normalize_slang(text)
     text = ' '.join([w for w in text.split() if len(w) < 25])
     return text
-
-# ========================
-# 형태소 분석 및 불용어 제거 함수
-# ========================
-def tokenize_and_remove_stopwords(text):
-    if pd.isna(text):
-        return []
-    tokens = tokenizer.tokenize(text)
-    filtered = [w for w in tokens if w.lower() not in custom_stopwords]
-    return filtered
 
 # ========================
 # 공통 유틸 함수들
@@ -157,6 +176,9 @@ def preprocess_genius_dataset(df):
     print("6. 형태소 분석 및 불용어 제거 중...")
     df['lyrics_tokens'] = df['lyrics'].apply(tokenize_and_remove_stopwords)
 
+    print("7. 빈 토큰 제거 및 리셋 중...")
+    df = df[df['lyrics_tokens'].apply(lambda x: len(x) > 0)].reset_index(drop=True)
+
     print("전처리 완료.")
     return df.reset_index(drop=True)
 
@@ -184,6 +206,9 @@ def preprocess_top100_dataset(df):
 
     print("4. 형태소 분석 및 불용어 제거 중...")
     df['lyrics_tokens'] = df['lyrics'].apply(tokenize_and_remove_stopwords)
+
+    print("5. 빈 토큰 제거 및 리셋 중...")
+    df = df[df['lyrics_tokens'].apply(lambda x: len(x) > 0)].reset_index(drop=True)
 
     print("전처리 완료.")
     return df.reset_index(drop=True)
