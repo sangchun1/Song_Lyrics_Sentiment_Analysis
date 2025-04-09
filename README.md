@@ -24,32 +24,32 @@
 ## 🗂️ 프로젝트 구조
 
 📁 Song Lyrics Sentiment Analysis  
-├── 📂 dataset/                                       # 원본 데이터 (Kaggle에서 수집)  
+├── 📂 dataset/   # 원본 데이터 (Kaggle에서 수집)  
 │   ├── 📄 Genius Song Lyrics.csv  
 │   └── 📄 Top 100 Songs & Lyrics By Year 1959 - 2023 (USA).csv  
 │  
-├── 📂 data/                                          # 전처리된 데이터 및 샘플 저장 및 감정 사전 저장
-│   ├── 📄 NRC-Emotion-Lexicon-Wordlevel-v0.92.txt    # 감정사전
-│   ├── 📄 genius_cleaned.pkl 
-│   ├── 📄 top100_cleaned.pkl
-│   ├── 📄 genius_cleaned_sample.csv  
-│   └── 📄 top100_cleaned_sample.csv  
+├── 📂 data/   # 전처리된 데이터 및 샘플 저장 및 감정 사전 저장   
+│   ├── 📄 NRC-Emotion-Lexicon-Wordlevel-v0.92.txt   # 감정사전   
+│   ├── 📄 genius_cleaned.pkl   
+│   ├── 📄 top100_cleaned.pkl   
+│   ├── 📄 genius_cleaned_sample.csv    
+│   └── 📄 top100_cleaned_sample.csv   
 │  
-├── 📂 preprocess/                                    # 전처리 코드와 노트북  
-│   ├── 📄 preprocessing.py                           # 함수 모듈화된 전처리 코드  
-│   └── 📄 preprocess.ipynb                           # 데이터 전처리 실험 및 확인용 노트북  
-│   ├── 📄 filler_words.txt                           # 노래 가사용 불용어 사전(추가)  
-│   └── 📄 lid.176.bin                                # fasttext 언어 식별 모델
+├── 📂 preprocess/   # 전처리 코드와 노트북  
+│   ├── 📄 preprocessing.py   # 함수 모듈화된 전처리 코드  
+│   └── 📄 preprocess.ipynb   # 데이터 전처리 실험 및 확인용 노트북  
+│   ├── 📄 filler_words.txt   # 노래 가사용 불용어 사전(추가)  
+│   └── 📄 lid.176.bin        # fasttext 언어 식별 모델   
 │  
-├── 📂 analysis/                                      # 분석 및 시각화 코드
-│   ├── 📄 emotion_lexicon_analysis.ipynb             # 감정 단어 기반 분석 및 감정 점수 계산
-│   └── 📄 emotion_visualization.ipynb                # 감정 분포 및 트렌드 시각화 노트북
+├── 📂 analysis/   # 분석 및 시각화 코드   
+│   ├── 📄 emotion_lexicon_analysis.ipynb   # 감정 단어 기반 분석 및 감정 점수 계산   
+│   └── 📄 emotion_visualization.ipynb      # 감정 분포 및 트렌드 시각화 노트북   
 │  
-├── 📂 results/                                       # 시각화 이미지, 보고서, 발표자료 
-│   ├── 📄 emotion_analysis.pkl                       # 전체 데이터 감정 분석 결과 
-│   └── 📄 sample_emotion_analysis.pkl                # 샘플 데이터 감정 분석 결과  
+├── 📂 results/   # 시각화 이미지, 보고서, 발표자료   
+│   ├── 📄 emotion_analysis.pkl          # 전체 데이터 감정 분석 결과   
+│   └── 📄 sample_emotion_analysis.pkl   # 샘플 데이터 감정 분석 결과    
 │  
-└── 📄 README.md                                      # 프로젝트 소개 문서
+└── 📄 README.md   # 프로젝트 소개 문서
 
 ## 🗂️ 데이터셋 정보
 
