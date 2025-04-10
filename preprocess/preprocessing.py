@@ -8,7 +8,7 @@ from nltk.tokenize import TreebankWordTokenizer
 from nltk.stem import WordNetLemmatizer
 
 # ========================
-# NLTK 리소스 다운로드
+# NLTK 리소스 다운로드(일회성)
 # ========================
 # nltk.download("punkt")
 # nltk.download("punkt_tab")
@@ -176,8 +176,9 @@ def preprocess_genius_dataset(df):
     print("6. 형태소 분석 및 불용어 제거 중...")
     df['lyrics_tokens'] = df['lyrics'].apply(tokenize_and_remove_stopwords)
 
-    print("7. 빈 토큰 제거 및 리셋 중...")
+    print("7. 빈 토큰 리스트 제거 및 중복 제거 중...")
     df = df[df['lyrics_tokens'].apply(lambda x: len(x) > 0)].reset_index(drop=True)
+    df = df.drop_duplicates(subset=['title', 'artist']).reset_index(drop=True)
 
     print("전처리 완료.")
     return df.reset_index(drop=True)
@@ -207,8 +208,9 @@ def preprocess_top100_dataset(df):
     print("4. 형태소 분석 및 불용어 제거 중...")
     df['lyrics_tokens'] = df['lyrics'].apply(tokenize_and_remove_stopwords)
 
-    print("5. 빈 토큰 제거 및 리셋 중...")
+    print("5. 빈 토큰 리스트 제거 및 중복 제거 중...")
     df = df[df['lyrics_tokens'].apply(lambda x: len(x) > 0)].reset_index(drop=True)
+    df = df.drop_duplicates(subset=['title', 'artist']).reset_index(drop=True)
 
     print("전처리 완료.")
     return df.reset_index(drop=True)
