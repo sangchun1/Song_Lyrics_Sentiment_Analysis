@@ -17,16 +17,15 @@
 *.rar
 *.tar
 *.zip
-*.bin
 
 # Logs and databases #
 ######################
 *.log
 *.csv
-*.pkl
 *.json
 *.sql
 *.sqlite
+__pycache__
 
 # OS generated files #
 ######################
