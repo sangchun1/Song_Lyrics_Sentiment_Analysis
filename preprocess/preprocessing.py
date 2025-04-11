@@ -146,7 +146,7 @@ def process_genius_translations(df):
 
     return df
 
-def preprocess_genius_dataset(df):
+def preprocess_genius_dataset(df, top_n=100000):
     print("1. 컬럼 정리 및 결측치 제거 중...")
     df = df.rename(columns={
         'title': 'title',
@@ -155,30 +155,33 @@ def preprocess_genius_dataset(df):
         'lyrics': 'lyrics',
         'year': 'year'
     })
-    df = df.dropna(subset=['lyrics', 'year', 'language'])
+    df = df.dropna()
     df = df.drop(columns=[col for col in df.columns if col not in ['title', 'artist', 'genre', 'views', 'year', 'lyrics', 'language']])
     df = df[['title', 'artist', 'genre', 'year', 'views', 'lyrics', 'language']]
 
     print("2. 연도 필터링 중...")
     df = filter_by_year_range(df, 1980, 2024)
 
-    print("3. 영어 가사 필터링 중...")
+    print(f"3. views 기준 상위 {top_n}개 추출 중...")
+    df = df.sort_values(by='views', ascending=False).head(top_n).reset_index(drop=True)
+
+    print("4. 영어 가사 필터링 중...")
     df = df[df['language'] == 'en']
     df['is_english'] = parallel_language_filter(df, 'lyrics')
     df = df[df['is_english']].drop(columns=['language', 'is_english'])
 
-    print("4. 제목 및 아티스트 정리 중...")
+    print("5. 제목 및 아티스트 정리 중...")
+    df = df.drop_duplicates(subset=['title', 'artist']).reset_index(drop=True)
     df = process_genius_translations(df)
 
-    print("5. 가사 정제 중...")
+    print("6. 가사 정제 중...")
     df['lyrics'] = df['lyrics'].apply(preprocess_lyrics)
 
-    print("6. 형태소 분석 및 불용어 제거 중...")
+    print("7. 형태소 분석 및 불용어 제거 중...")
     df['lyrics_tokens'] = df['lyrics'].apply(tokenize_and_remove_stopwords)
 
-    print("7. 빈 토큰 리스트 제거 및 중복 제거 중...")
+    print("8. 빈 토큰 리스트 제거 중...")
     df = df[df['lyrics_tokens'].apply(lambda x: len(x) > 0)].reset_index(drop=True)
-    df = df.drop_duplicates(subset=['title', 'artist']).reset_index(drop=True)
 
     print("전처리 완료.")
     return df.reset_index(drop=True)
