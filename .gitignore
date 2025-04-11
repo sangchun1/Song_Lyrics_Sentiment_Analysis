@@ -27,6 +27,12 @@
 *.sqlite
 __pycache__
 
+# Large Files
+######################
+data/genius_cleaned.pkl
+data/top100_cleaned.pkl
+preprocess/lid.176.bin
+
 # OS generated files #
 ######################
 .DS_Store
