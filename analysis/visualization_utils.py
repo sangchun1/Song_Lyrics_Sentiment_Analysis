@@ -268,7 +268,6 @@ def show_top_songs_by_emotion_score(df, score_column="emotion_score", top_n=5, i
         lower_bound = Q1 - 1.5 * IQR
         upper_bound = Q3 + 1.5 * IQR
         plot_df = plot_df[(plot_df[score_column] >= lower_bound) & (plot_df[score_column] <= upper_bound)]
-        title += "(이상치 제거)"
     top_songs = plot_df.sort_values(score_column, ascending=is_bottom).head(top_n)
     display(top_songs[['title', 'artist', score_column, "emotion_score_detail"]])
 
