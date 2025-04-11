@@ -25,7 +25,13 @@
 *.json
 *.sql
 *.sqlite
-__pycache__
+
+# Python cache
+######################
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
 # Large Files
 ######################
