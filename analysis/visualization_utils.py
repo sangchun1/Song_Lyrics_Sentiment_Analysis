@@ -5,6 +5,7 @@ import pandas as pd
 from scipy.stats import linregress
 from collections import defaultdict
 from sklearn.preprocessing import MinMaxScaler
+import os
 
 def load_emotion_lexicon(lexicon_path = "../data/NRC-Emotion-Lexicon-Wordlevel-v0.92.txt", custom_emotion_map = {
                                                                                             "joy": "love", "trust": "love", "positive": "love", 
@@ -21,40 +22,58 @@ def load_emotion_lexicon(lexicon_path = "../data/NRC-Emotion-Lexicon-Wordlevel-v
                     word_to_emotions.setdefault(word, set()).add(mapped_emotion)
     return word_to_emotions
 
-def plot_emotion_count_bar(df, emotion_list, title="감정군별 감정 단어 수 분포"):
-    totals = {emo: df[f"count_{emo}"].sum() for emo in emotion_list}
+def plot_emotion_count_bar(df, emotion_list, title="감정군별 감정 단어 수 분포", save=False, save_path=None):
+    totals = {emo.capitalize(): df[f"count_{emo}"].sum() for emo in emotion_list}
     plt.figure(figsize=(8, 5))
     sns.barplot(x=list(totals.keys()), y=list(totals.values()), palette="Blues_d")
     plt.title(title)
     plt.xlabel("감정군")
     plt.ylabel("총 감정 단어 수")
     plt.tight_layout()
+    if save:
+        if save_path is None:
+            filename = title
+            save_path = f"../results/plots/{filename}.png"
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300)
     plt.show()
 
-def plot_emotion_ratio_bar(df, emotion_list, title="감정군별 감정 단어 비율 (평균)"):
-    ratios = {emo: df[f"ratio_{emo}"].mean() for emo in emotion_list}
+def plot_emotion_ratio_bar(df, emotion_list, title="감정군별 감정 단어 비율 (평균)", save=False, save_path=None):
+    ratios = {emo.capitalize(): df[f"ratio_{emo}"].mean() for emo in emotion_list}
     plt.figure(figsize=(8, 5))
     sns.barplot(x=list(ratios.keys()), y=list(ratios.values()), palette="Oranges_d")
     plt.title(title)
     plt.xlabel("감정군")
     plt.ylabel("평균 비율 (%)")
     plt.tight_layout()
+    if save:
+        if save_path is None:
+            filename = title
+            save_path = f"../results/plots/{filename}.png"
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300)
     plt.show()
 
-def generate_overall_wordcloud(df, title="전체 감정 단어 WordCloud"):
+def generate_overall_wordcloud(df, title="전체 감정 단어 WordCloud", save=False, save_path=None):
     plot_df = df.copy()
     plot_df["emotion_words"] = plot_df["emotion_words"].dropna().apply(lambda x: x.split(", ") if isinstance(x, str) else x)
     all_words = [word for sublist in plot_df["emotion_words"].dropna() for word in sublist]
     all_emotion_words = " ".join(all_words)
-    wc = WordCloud(width=800, height=400, collocations=False, background_color="white").generate(all_emotion_words)
+    wc = WordCloud(width=800, height=400, collocations=False, background_color="white", colormap="viridis").generate(all_emotion_words)
     plt.figure(figsize=(10, 5))
     plt.imshow(wc, interpolation="bilinear")
     plt.axis("off")
     plt.title(title)
     plt.tight_layout()
+    if save:
+        if save_path is None:
+            filename = title
+            save_path = f"../results/plots/{filename}.png"
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300)
     plt.show()
 
-def generate_grouped_wordclouds(df, selected_emotion, title="감정군 감정 단어 WordCloud"):
+def generate_grouped_wordclouds(df, selected_emotion, title="감정군 감정 단어 WordCloud", colormap=None, save=False, save_path=None):
     plot_df = df.copy()
     plot_df["emotion_words"] = plot_df["emotion_words"].dropna().apply(lambda x: x.split(", ") if isinstance(x, str) else x)
     word_to_emotions = load_emotion_lexicon()
@@ -64,54 +83,69 @@ def generate_grouped_wordclouds(df, selected_emotion, title="감정군 감정 �
             if word in word_to_emotions:
                 for emo in word_to_emotions[word]:
                     emotion_word_dict[emo].append(word)
-    # if selected_emotion not in emotion_word_dict:
-    #     print(f"'{selected_emotion}' 그룹이 존재하지 않습니다.")
-    #     return
     text = " ".join(emotion_word_dict[selected_emotion])
-    wc = WordCloud(width=800, height=400, collocations=False, background_color="white").generate(text)
+    wc = WordCloud(width=800, height=400, collocations=False, colormap=colormap, background_color="white").generate(text)
     plt.figure(figsize=(7, 5))
     plt.imshow(wc, interpolation="bilinear")
     plt.axis("off")
-    plt.title(f"{selected_emotion} {title}")
+    plt.title(f"{selected_emotion.capitalize()} {title}")
     plt.tight_layout()
+    if save:
+        if save_path is None:
+            filename = f"{selected_emotion.capitalize()} {title}"
+            save_path = f"../results/plots/{filename}.png"
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300)
     plt.show()
 
-def plot_top_emotion_words_per_song(df, target_title=None, top_n=5):
+def plot_emotion_count_per_song(df, target_title=None, top_n=5, save=False, save_path=None):
     if target_title:
         row = df[df['title'] == target_title].iloc[0]
         word_columns = [col for col in df.columns if col.startswith("count_")]
-        word_freq = {col: row[col] for col in word_columns if row[col] > 0}
+        word_freq = {col.replace("count_", "").capitalize(): row[col] for col in word_columns if row[col] > 0}
         top_words = dict(sorted(word_freq.items(), key=lambda item: item[1], reverse=True)[:top_n])
         if top_words:
             plt.figure(figsize=(6, 4))
-            sns.barplot(x=list(top_words.keys()), y=list(top_words.values()), palette="coolwarm")
-            plt.title(f"곡: {row['title']} - Top {top_n} 감정 단어")
+            sns.barplot(x=list(top_words.keys()), y=list(top_words.values()), palette="Set2")
+            plt.title(f"{row['title']} 감정 단어 수")
             plt.ylabel("빈도")
-            plt.tight_layout()
+            plt.tight_layout()       
+            if save:
+                if save_path is None:
+                    filename = f"{row['title']} 감정 단어 수"
+                    save_path = f"../results/plots/{filename}.png"
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                plt.savefig(save_path, dpi=300)
             plt.show()
     else:
         for idx, row in df.iterrows():
             word_columns = [col for col in df.columns if col.startswith("count_")]
-            word_freq = {col: row[col] for col in word_columns if row[col] > 0}
+            word_freq = {col.replace("count_", "").capitalize(): row[col] for col in word_columns if row[col] > 0}
             top_words = dict(sorted(word_freq.items(), key=lambda item: item[1], reverse=True)[:top_n])
             if top_words:
                 plt.figure(figsize=(6, 4))
-                sns.barplot(x=list(top_words.keys()), y=list(top_words.values()), palette="coolwarm")
-                plt.title(f"곡: {row['title']} - Top {top_n} 감정 단어")
+                sns.barplot(x=list(top_words.keys()), y=list(top_words.values()), palette="Set2")
+                plt.title(f"{row['title']} 감정 단어 수")
                 plt.ylabel("빈도")
                 plt.tight_layout()
                 plt.show()
 
-def plot_emotion_word_correlation(df, title="감정 단어 수 상관관계 히트맵"):
+def plot_emotion_word_correlation(df, title="감정 단어 수 상관관계 히트맵", save=False, save_path=None):
     word_columns = [col for col in df.columns if col.startswith("count_")]
     corr = df[word_columns].corr()
     plt.figure(figsize=(8, 6))
     sns.heatmap(corr, annot=True, cmap="coolwarm", fmt=".2f")
     plt.title(title)
     plt.tight_layout()
+    if save:
+        if save_path is None:
+            filename = title
+            save_path = f"../results/plots/{filename}.png"
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300)
     plt.show()
 
-def plot_emotion_score_histogram(df, score_column="emotion_score", bins=30, title="감정 점수 분포 히스토그램", exclude_outliers=False):
+def plot_emotion_score_histogram(df, score_column="emotion_score", bins=30, title="감정 점수 분포 히스토그램", exclude_outliers=False, save=False, save_path=None):
     plot_df = df.copy()
     if exclude_outliers:
         Q1 = plot_df[score_column].quantile(0.25)
@@ -120,15 +154,22 @@ def plot_emotion_score_histogram(df, score_column="emotion_score", bins=30, titl
         lower_bound = Q1 - 1.5 * IQR
         upper_bound = Q3 + 1.5 * IQR
         plot_df = plot_df[(plot_df[score_column] >= lower_bound) & (plot_df[score_column] <= upper_bound)]
+        title += "(이상치 제외)"
     plt.figure(figsize=(8, 5))
     sns.histplot(plot_df[score_column], bins=bins, kde=True)
     plt.title(title)
     plt.xlabel("감정 점수")
     plt.ylabel("빈도")
     plt.tight_layout()
+    if save:
+        if save_path is None:
+            filename = title
+            save_path = f"../results/plots/{filename}.png"
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300)
     plt.show()
 
-def plot_normalized_emotion_score_histogram(df, score_column="normalized_emotion_score", bins=30, title="감정 점수 분포 히스토그램 (정규화)"):
+def plot_normalized_emotion_score_histogram(df, score_column="normalized_emotion_score", bins=30, title="감정 점수 분포 히스토그램 (정규화)", save=False, save_path=None):
     plot_df = df.copy()
     plt.figure(figsize=(8, 5))
     sns.histplot(plot_df[score_column], bins=bins, kde=True, color="green")
@@ -136,9 +177,15 @@ def plot_normalized_emotion_score_histogram(df, score_column="normalized_emotion
     plt.xlabel("감정 점수 (정규화)")
     plt.ylabel("곡 수")
     plt.tight_layout()
+    if save:
+        if save_path is None:
+            filename = title
+            save_path = f"../results/plots/{filename}.png"
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300)
     plt.show()
 
-def plot_avg_emotion_score(df, selected_emotion, title="감정군별 평균 감정 점수"):
+def plot_avg_emotion_score(df, selected_emotion, title="감정군별 평균 감정 점수", save=False, save_path=None):
     avg_scores_by_emotion = {}
     for emo in selected_emotion:
         mask = df[f"count_{emo}"] > 0  # 해당 감정 단어가 존재하는 곡만
@@ -149,10 +196,17 @@ def plot_avg_emotion_score(df, selected_emotion, title="감정군별 평균 감�
     plt.title(title)
     plt.ylabel("평균 감정 점수")
     plt.tight_layout()
+    if save:
+        if save_path is None:
+            filename = title
+            save_path = f"../results/plots/{filename}.png"
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300)
     plt.show()
 
-def plot_emotion_ratio_vs_score(df, emotion_name, score_column="emotion_score", exclude_outliers=False):
+def plot_emotion_ratio_vs_score(df, emotion_name, score_column="emotion_score", exclude_outliers=False, save=False, save_path=None):
     plot_df = df.copy()
+    title = f"{emotion_name.capitalize()} 비율 vs 감정 점수"
     if exclude_outliers:
         Q1 = plot_df[score_column].quantile(0.25)
         Q3 = plot_df[score_column].quantile(0.75)
@@ -160,6 +214,7 @@ def plot_emotion_ratio_vs_score(df, emotion_name, score_column="emotion_score", 
         lower_bound = Q1 - 1.5 * IQR
         upper_bound = Q3 + 1.5 * IQR
         plot_df = plot_df[(plot_df[score_column] >= lower_bound) & (plot_df[score_column] <= upper_bound)]
+        title += "(이상치 제거)"
     x = plot_df[score_column]
     y = plot_df[f"ratio_{emotion_name}"]
     slope, intercept, r_value, p_value, std_err = linregress(x, y)
@@ -168,14 +223,20 @@ def plot_emotion_ratio_vs_score(df, emotion_name, score_column="emotion_score", 
     ax = sns.regplot(x=x, y=y, scatter_kws={"alpha": 0.4}, line_kws={"color": "red"})
     plt.plot([], [], ' ', label=f"$r$ = {r_value:.2f}")
     plt.plot([], [], ' ', label=f"$R^2$ = {r_squared:.2f}")
-    plt.title(f"{emotion_name.capitalize()} 비율 vs 감정 점수", fontsize=13)
+    plt.title(title, fontsize=13)
     plt.xlabel("감정 점수")
     plt.ylabel(f"{emotion_name.capitalize()} 비율 (%)")
     plt.legend(loc="best")
     plt.tight_layout()
+    if save:
+        if save_path is None:
+            filename = title
+            save_path = f"../results/plots/{filename}.png"
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300)
     plt.show()
 
-def plot_emotion_ratio_vs_normalized_score(df, emotion_name, score_column="normalized_emotion_score"):
+def plot_emotion_ratio_vs_normalized_score(df, emotion_name, score_column="normalized_emotion_score", save=False, save_path=None):
     x = df[score_column]
     y = df[f"ratio_{emotion_name}"]
     slope, intercept, r_value, p_value, std_err = linregress(x, y)
@@ -184,11 +245,17 @@ def plot_emotion_ratio_vs_normalized_score(df, emotion_name, score_column="norma
     ax = sns.regplot(x=x, y=y, scatter_kws={"alpha": 0.4}, line_kws={"color": "red"})
     plt.plot([], [], ' ', label=f"$r$ = {r_value:.2f}")
     plt.plot([], [], ' ', label=f"$R^2$ = {r_squared:.2f}")
-    plt.title(f"{emotion_name.capitalize()} 비율 vs 감정 점수", fontsize=13)
+    plt.title(f"{emotion_name.capitalize()} 비율 vs 감정 점수 (정규화)", fontsize=13)
     plt.xlabel("감정 점수")
     plt.ylabel(f"{emotion_name.capitalize()} 비율 (%)")
     plt.legend(loc="best")
     plt.tight_layout()
+    if save:
+        if save_path is None:
+            filename = f"{emotion_name.capitalize()} 비율 vs 감정 점수 (정규화)"
+            save_path = f"../results/plots/{filename}.png"
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300)
     plt.show()
 
 def show_top_songs_by_emotion_score(df, score_column="emotion_score", top_n=5, is_bottom=False, exclude_outliers=False):
@@ -201,6 +268,7 @@ def show_top_songs_by_emotion_score(df, score_column="emotion_score", top_n=5, i
         lower_bound = Q1 - 1.5 * IQR
         upper_bound = Q3 + 1.5 * IQR
         plot_df = plot_df[(plot_df[score_column] >= lower_bound) & (plot_df[score_column] <= upper_bound)]
+        title += "(이상치 제거)"
     top_songs = plot_df.sort_values(score_column, ascending=is_bottom).head(top_n)
     display(top_songs[['title', 'artist', score_column, "emotion_score_detail"]])
 
