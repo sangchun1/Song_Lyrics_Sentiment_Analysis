@@ -45,7 +45,7 @@
 │   ├── 📄 emotion_lexicon_analysis.ipynb   *# 감정 단어 기반 분석 및 감정 점수 계산*   
 │   └── 📄 emotion_visualization.ipynb      *# 감정 분포 및 트렌드 시각화 노트북*   
 │  
-├── 📂 results/   *# 시각화 이미지, 보고서, 발표자료* 
+├── 📂 results/   *# 시각화 이미지, 보고서, 발표자료*    
 │   ├── 📂 plots  *# 시각화 이미지*  
 │   ├── 📄 genius_emotion_analysis.pkl   *# Genius Song Lyrics 데이터 감정 분석 결과*   
 │   ├── 📄 top100_emotion_analysis.pkl   *# Top 100 Songs & Lyrics 데이터 감정 분석 결과*   
