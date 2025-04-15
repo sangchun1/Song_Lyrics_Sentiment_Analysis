@@ -19,7 +19,7 @@ from nltk.stem import WordNetLemmatizer
 # ========================
 # 사용자 정의 불용어 로딩
 # ========================
-def load_filler_words(filepath="filler_words.txt"):
+def load_filler_words(filepath="../data/filler_words.txt"):
     with open(filepath, "r", encoding="utf-8") as f:
         return set(line.strip() for line in f if line.strip())
 
@@ -52,7 +52,7 @@ def tokenize_and_remove_stopwords(text):
 # ========================
 # fastText 모델 로드
 # ========================
-lang_model = fasttext.load_model("lid.176.bin")
+lang_model = fasttext.load_model("../data/lid.176.bin")
 
 def is_english_fasttext(text):
     try:
