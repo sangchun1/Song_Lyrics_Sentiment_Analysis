@@ -38,6 +38,9 @@ __pycache__/
 data/genius_cleaned.pkl
 data/top100_cleaned.pkl
 data/lid.176.bin
+results/emotion_analysis.pkl
+results/genius_emotion_analysis.pkl
+results/top100_emotion_analysis.pkl
 
 # OS generated files #
 ######################
