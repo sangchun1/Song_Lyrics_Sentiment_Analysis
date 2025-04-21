@@ -84,25 +84,30 @@
 │   ├── 📄 filler_words.txt                           *# 노래 가사용 불용어 사전(추가)*   
 │   ├── 📄 lid.176.bin                                *# FastText 언어 식별 모델*   
 │   ├── 📄 genius_cleaned.pkl   
-│   ├── 📄 top100_cleaned.pkl   
-│   ├── 📄 genius_cleaned_sample.csv    
-│   └── 📄 top100_cleaned_sample.csv   
+│   └── 📄 top100_cleaned.pkl   
 │  
 ├── 📂 preprocess/   *# 전처리 코드와 노트북*  
 │   ├── 📄 preprocessing.py   *# 함수 모듈화된 전처리 코드*  
 │   └── 📄 preprocess.ipynb   *# 데이터 전처리 실험 및 확인용 노트북*  
 │  
-├── 📂 analysis/   *# 분석 및 시각화 코드*   
-│   ├── 📄 emotion_lexicon_analysis.ipynb    *# 감정 단어 기반 분석 및 감정 점수 계산*   
+├── 📂 analysis/   *# 분석 및 시각화 노트북*   
+│   ├── 📄 emotion_lexicon_analysis.ipynb    *# 감정 단어 및 감정 점수 기반 분석*   
 │   ├── 📄 category_analysis.ipynb           *# 장르별, 시대별, 아티스트별 분석*   
-│   └── 📄 visualization.ipynb               *# 시각화 노트북*   
+│   └── 📄 visualization.ipynb               *# 시각화*   
 │  
-├── 📂 module/   *# 분석 및 시각화 함수 모듈*   
-│   ├── 📄 __init__.py        *# *   
-│   ├── 📄 category_utils.py  *# 카데고리 분석 공통 함수 모듈*   
-│   ├── 📄 genre_analysis.py  *# 장르별 분석 함수 모듈*   
-│   ├── 📄 decade_analysis.py *# 시대별 분석 함수 모듈*   
-│   ├── 📄 artist_analysis.py *# 아티스트별 분석 함수 모듈*   
+├── 📂 module/   *# 분석 및 시각화 함수 모듈* 
+│   ├── 📂 category    *# 카테고리 분석 모듈 패키지*   
+│   │   ├── 📄 __init__.py    
+│   │   ├── 📄 category_utils.py  *# 카데고리 분석 공통 함수 모듈*   
+│   │   ├── 📄 genre_analysis.py  *# 장르별 분석 함수 모듈*   
+│   │   ├── 📄 decade_analysis.py *# 시대별 분석 함수 모듈*   
+│   │   └── 📄 artist_analysis.py *# 아티스트별 분석 함수 모듈*  
+│   ├── 📂 similarity   *# 유사도 및 클러스터링 분석 모듈 패키지*  
+│   │   ├── 📄 __init__.py   
+│   │   ├── 📄 similarity_analysis.py *# 유사도 분석 함수 모듈*   
+│   │   ├── 📄 clustering_analysis.py *# 클러스터링 분석 함수 모듈*   
+│   │   └── 📄 recommendation_engine.py *# 추천 알고리즘 함수 모듈*  
+│   ├── 📄 __init__.py  
 │   └── 📄 visualization.py   *# 시각화 함수 모듈*   
 │  
 ├── 📂 results/   *# 시각화 이미지, 보고서, 발표자료*    
@@ -110,7 +115,6 @@
 │   ├── 📄 genius_emotion_analysis.pkl    *# Genius Song Lyrics 데이터 감정 분석 결과*   
 │   ├── 📄 top100_emotion_analysis.pkl    *# Top 100 Songs & Lyrics 데이터 감정 분석 결과*   
 │   ├── 📄 emotion_analysis.pkl           *# 전체 데이터 감정 분석 결과*   
-│   └── 📄 sample_emotion_analysis.pkl    *# 샘플 데이터 감정 분석 결과*    
 │   └── 📄 category_analysis.pkl          *# 카데고리 분석 결과*    
 │  
 └── 📄 README.md   *# 프로젝트 소개 문서*
