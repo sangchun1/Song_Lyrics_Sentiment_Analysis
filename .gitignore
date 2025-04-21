@@ -21,7 +21,6 @@
 # Logs and databases #
 ######################
 *.log
-*.csv
 *.json
 *.sql
 *.sqlite
@@ -35,12 +34,10 @@ __pycache__/
 
 # Large Files
 ######################
+dataset/Genius Song Lyrics.csv
+dataset/Top 100 Songs & Lyrics By Year 1959 - 2023 (USA).csv
 data/genius_cleaned.pkl
 data/top100_cleaned.pkl
-data/lid.176.bin
-results/emotion_analysis.pkl
-results/genius_emotion_analysis.pkl
-results/top100_emotion_analysis.pkl
 
 # OS generated files #
 ######################
