@@ -92,7 +92,7 @@
 
 ## 📊 분석 및 기능 구성
 
-### 1️⃣ 전처리
+### 1️⃣ [전처리](https://github.com/sangchun1/Song_Lyrics_Sentiment_Analysis/blob/main/preprocess/preprocess.ipynb)
 - 영어 가사 필터링: FastText를 통한 언어 감지 및 제거
 - 반복 후렴구 제거: 의미 중복 제거를 통한 감정 단어 정제
 - 줄임말 및 속어 정규화: "gonna → going to", "cuz → because" 등 사전 기반 치환
@@ -100,17 +100,17 @@
 - 불용어 제거 및 표제어화: 감탄사, 의미없는 소리 제거 + spaCy 기반 lemmatization
 - 감정 단어 필터링 및 매핑: NRC 감정 사전을 기반으로 한 감정군 할당
 
-### 2️⃣ 감정 분석
+### 2️⃣ [감정 분석](https://github.com/sangchun1/Song_Lyrics_Sentiment_Analysis/blob/main/analysis/emotion_lexicon_analysis.ipynb)
 - 감정군: love, hope, sadness, fear, disgust, anger (총 6개)
 - 감정 점수화: 각 감정에 가중치 부여 (예: love=+1.0, anger=–1.0)
 - 감정 점수 분포 시각화, 감정군별 워드클라우드 생성
 
-### 3️⃣ 카테고리 분석
+### 3️⃣ [카테고리 분석](https://github.com/sangchun1/Song_Lyrics_Sentiment_Analysis/blob/main/analysis/category_analysis.ipynb)
 - **장르별 분석**: 감정군 비율 및 평균 점수 시각화
 - **연도별 분석**: 감정군 비율 및 점수의 시대적 변화 시계열 분석
 - **아티스트별 분석**: 감정군 비율 및 시계열 추이 (예: Bruno Mars)
 
-### 4️⃣ 유사도 분석 및 클러스터링
+### 4️⃣ [유사도 분석 및 클러스터링](https://github.com/sangchun1/Song_Lyrics_Sentiment_Analysis/blob/main/analysis/similarity_clustering_analysis.ipynb)
 - 감정 단어 기반 TF-IDF 벡터화 (≈ 44,286곡 × 3,422단어)
 - 클러스터링 기법:
   - **KMeans**:
@@ -123,7 +123,7 @@
     - 군집 2: 희망·성장 중심 팝/록
 - 각 군집의 감정 점수, 장르 분포, 워드클라우드 시각화
 
-### 5️⃣ 개인화 추천 시스템
+### 5️⃣ [개인화 추천 시스템](https://github.com/sangchun1/Song_Lyrics_Sentiment_Analysis/blob/main/analysis/similarity_clustering_analysis.ipynb)
 - 사용자가 선택한 곡의 감정 벡터 기반 유사도 계산
 - 가장 유사한 곡들을 클러스터 및 감정 기반으로 추천
 - 예시: Viva La Vida → IU, Joji 등 감정적으로 유사한 곡 추천
