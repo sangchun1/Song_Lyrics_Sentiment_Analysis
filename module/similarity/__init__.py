@@ -13,7 +13,7 @@ from .clustering_analysis import (
 )
 
 # 추천 엔진 함수
-from .recommendation_engine import (
+from .recommendation_model import (
     get_user_emotion_profile,
     recommend_songs_by_profile
 )

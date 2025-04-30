@@ -2,30 +2,20 @@ import pandas as pd
 import re
 import fasttext
 from multiprocessing import Pool
-from nltk.tokenize import TreebankWordTokenizer
-from nltk.stem import WordNetLemmatizer
-from nltk.corpus import stopwords
-
+import spacy
 
 # ========================
-# NLTK 리소스 다운로드(일회성)
+# 필요 리소스 로드
 # ========================
-# nltk.download("punkt")
-# nltk.download("punkt_tab")
-# nltk.download("stopwords")
-# nltk.download("wordnet")
-# nltk.download("omw-1.4")
-
-# ========================
-# FastText 모델 로드
-# ========================
-lang_model = fasttext.load_model("../data/lid.176.bin")
-
-# ========================
-# NLTK 리소스 로드
-# ========================
-tokenizer = TreebankWordTokenizer() # NLTK의 TreebankWordTokenizer 사용
-lemmatizer = WordNetLemmatizer()    # NLTK의 WordNetLemmatizer 사용
+lang_model = fasttext.load_model("../data/lid.176.bin") # FastText 모델
+nlp = spacy.load("en_core_web_sm") # SpaCy tokenizer
+filler_words_path = '../data/filler_words.txt'
+def load_filler_words(path):
+    with open(path, 'r', encoding='utf-8') as f:
+        words = f.read().splitlines()
+    return set(word.strip().lower() for word in words if word.strip())
+custom_filler_words = load_filler_words(filler_words_path)
+stop_words = nlp.Defaults.stop_words.union(custom_filler_words)
 
 def filter_by_year_range(df, start_year=1980, end_year=2024):
     '''
@@ -149,7 +139,7 @@ def expand_multi_artist_rows(df):
 
     return final_df
 
-def preprocess_lyrics(text):
+def preprocess_lyrics(text, remove_repeat=True):
     '''
     전체 가사 전처리 함수
         Parameters:
@@ -158,7 +148,7 @@ def preprocess_lyrics(text):
         처리 과정:
         1. 중복된 라인 제거(반복되는 후렴구 등)
         2. 가사 정제(불필요한 문자 제거)
-        3. 속어 치환
+        3. 줄임말 및 속어 치환
         4. 길이가 긴 단어 제거
 
         Return:
@@ -168,33 +158,35 @@ def preprocess_lyrics(text):
         return ""
     
     # 중복된 라인 제거
-    lines = text.splitlines()
-    seen = {}
-    unique_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped:
-            seen[stripped] = seen.get(stripped, 0) + 1
-            if seen[stripped] <= 1:
-                unique_lines.append(stripped)
-    text = ' '.join(unique_lines)
+    if remove_repeat:
+        lines = text.splitlines()
+        seen = {}
+        unique_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped:
+                seen[stripped] = seen.get(stripped, 0) + 1
+                if seen[stripped] <= 1:
+                    unique_lines.append(stripped)
+        text = ' '.join(unique_lines)
 
     # 가사 정제(불필요한 문자 제거)
+    text = text.strip().lower()
     text = text.replace("’", "'").replace("‘", "'")
+    text = re.sub(r"(\w+)in'", r"\1ing", text)
+
+    # 특수문자 제거
     text = re.sub(r'\[.*?\]', ' ', text)
     text = text.replace('\n', ' ')
     text = re.sub(r"[^a-zA-Z\s']", '', text)
     text = re.sub(r'\s+', ' ', text)
-    text = text.strip().lower()
 
     # 속어 치환
-    slang_dict = {
+    slang_contractions = {
         "gonna": "going to",
         "wanna": "want to",
-        "ain't": "is not",
         "lemme": "let me",
         "gotta": "got to",
-        "'til": "until",
         "y'all": "you all",
         "imma": "i am going to",
         "kinda": "kind of",
@@ -204,48 +196,84 @@ def preprocess_lyrics(text):
         "wassup": "what is up",
         "yo": "you",
         "cuz": "because",
-        "cause": "because"
+        "cause": "because",
+        "gimme": "give me",
+        "bruh": "brother",
+        "ya": "you",
+        "nah": "no",
+        "bet": "okay",
+        "finna": "going to",
+        "tryna": "trying to",
+        "sorta": "sort of",
+        "'em": "them",
+        "'cause": "because",
+        "'til": "until",
+        "'round": "around",
+        "'bout": "about",
+        "ain't": "is not",
+        "would've": "would have",
+        "could've": "could have",
+        "should've": "should have",
+        "wouldn't": "would not",
+        "couldn't": "could not",
+        "shouldn't": "should not",
+        "can't": "cannot",
+        "won't": "will not",
+        "goin": "going",
+        "nothin": "nothing",
+        "lovin": "loving",
+        "lookin": "looking",
+        "feelin": "feeling",
+        "gettin": "getting",
+        "somethin": "something",
+        "doin": "doing",
+        "comin": "coming",
+        "tryin": "trying",
+        "talkin": "talking",
+        "livin": "living",
+        "thinkin": "thinking",
+        "makin": "making",
+        "runnin": "running",
+        "fuckin": "fucking",
+        "sayin": "saying",
+        "dancin": "dancing",
+        "flowin": "flowing"
     }
-    for slang, standard in slang_dict.items():
-        text = re.sub(r'\b' + re.escape(slang) + r'\b', standard, text)
+    for short, full in {**slang_contractions}.items():
+        text = re.sub(r"\b" + re.escape(short) + r"\b", full, text)
+    
+    # 반복 문자 줄이기
+    text = re.sub(r'(\w)\1{2,}', r'\1', text)
 
     # 길이가 긴 단어 제거
     text = ' '.join([w for w in text.split() if len(w) < 25])
+
     return text
 
-def tokenize_and_remove_stopwords(text):
+def tokenize_lemmatize(texts, n_process=-1):
     '''
-    형태소 분석 + 불용어 제거 + lemmatization 적용 함수
+    텍스트를 spaCy로 토큰화하고, 불용어 제거 및 표제어화(lemmatization)를 적용하는 함수
 
         Parameters:
         - text: str, 텍스트
 
         처리과정:
-        1. NLTK TreebankWordTokenizer를 사용하여 형태소 분석
-        2. 사용자 정의 불용어(custom_stopwords)와 NLTK 불용어(stopwords)를 사용하여 불용어 제거
-        3. NLTK WordNetLemmatizer를 사용, lemmatization을 적용하여 단어의 기본형으로 변환
+        1. spaCy로 토큰화
+        2. 불용어 제거
+        3. spaCy의 lemmatization을 사용하여 표준화
 
         Return:
-        - list, lemmatization된 단어 리스트
+        - list, 토큰화된 단어 리스트
     '''
-    if pd.isna(text):
-        return []
 
-    # 형태소 분석
-    tokens = tokenizer.tokenize(text)
+    results = []
 
-    # 커스텀 불용어 불러오기
-    with open("../data/filler_words.txt", "r", encoding="utf-8") as f:
-        filler_words = set(line.strip() for line in f if line.strip())
-    
-    # NLTK 불용어 업데이트
-    custom_stopwords = set(stopwords.words("english"))
-    custom_stopwords.update(filler_words)
-    
-    # 사용자 정의 불용어(custom_stopwords)를 사용하여 불용어 제거
-    filtered = [w for w in tokens if w.lower() not in custom_stopwords]
-
-    # lemmatization 적용
-    lemmatized = [lemmatizer.lemmatize(token) for token in filtered]
-
-    return lemmatized
+    for doc in nlp.pipe(texts, batch_size=50, n_process=n_process):
+        tokens = [
+            token.lemma_.lower()
+            for token in doc
+            if token.is_alpha and token.text.lower() not in stop_words
+        ]
+        results.append(tokens)
+        
+    return results

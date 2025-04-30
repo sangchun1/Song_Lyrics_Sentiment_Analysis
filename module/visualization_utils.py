@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import seaborn as sns
 from wordcloud import WordCloud
+from sklearn.feature_extraction.text import TfidfVectorizer
 from scipy.stats import linregress
 from collections import defaultdict
 from better_profanity import profanity
@@ -10,10 +11,8 @@ import os
 profanity.load_censor_words() # profanity 라이브러리 불러오기
 #####################################################################################################################################
 def load_emotion_lexicon(lexicon_path = "../data/NRC-Emotion-Lexicon-Wordlevel-v0.92.txt", 
-                         custom_emotion_map = {"joy": "love", "trust": "love", "positive": "love", 
-                                                "sadness": "sadness", "fear": "sadness", "negative": "sadness",
-                                                "anger": "anger", "disgust": "anger",
-                                                "anticipation": "hope", "surprise": "surprise",}):
+                         custom_emotion_map = {"joy": "love", "trust": "love", "sadness": "sadness", "fear": "fear",
+                                               "disgust":"disgust", "anger": "anger", "anticipation": "hope", "surprise": "hope",}):
     '''
     감정 사전 불러오는 함수
 
@@ -35,10 +34,13 @@ def load_emotion_lexicon(lexicon_path = "../data/NRC-Emotion-Lexicon-Wordlevel-v
     with open(lexicon_path, "r", encoding="utf-8") as f:
         for line in f:
             word, emotion, association = line.strip().split("\t")
-            if int(association) == 1:
-                mapped_emotion = custom_emotion_map.get(emotion)
-                if mapped_emotion:
-                    word_to_emotions.setdefault(word, set()).add(mapped_emotion)
+            if int(association) != 1:
+                continue  # association이 1이 아닌 경우 스킵
+            if emotion not in custom_emotion_map:
+                continue  # 매핑이 없는 감정은 스킵
+            mapped_emotion = custom_emotion_map[emotion]
+            word_to_emotions.setdefault(word, set()).add(mapped_emotion)
+            
     return word_to_emotions
 
 def censor_word_list(word_list):
@@ -141,20 +143,22 @@ def plot_emotion_bar(df, emotion_list, value_type="count", category=None, catego
 
     plt.show()
 
-def generate_topN_wordcloud(df, mode="category", category=None, category_value=None,
-                            selected_emotion=None, top_n=100, censor_profanity=False,
+def generate_topN_wordcloud(df, value_type="count", mode="category", category=None, category_value=None,
+                            selected_emotion=None, top_n=100, title=None, censor_profanity=False,
                             color_map="Set2", save=False, save_path=None):
     '''
     감정 단어 워드클라우드를 생성하는 함수
 
         Parameters:
         - df: DataFrame, 감정 단어 데이터프레임
+        - value_type: str, "count" 또는 "tfidf", 감정 단어 수 또는 tfidf
         - mode: str, "category" 또는 "grouped", 카테고리 모드 또는 감정군 그룹 모드
         - category: str, 카테고리 이름
         - category_value: str, 카테고리 값
         - selected_emotion: str, 선택된 감정군
         - top_n: int, 상위 N개 단어
         - censor_profanity: bool, 욕설 단어 censor 처리 여부
+        - title: str, 워드클라우드 제목
         - color_map: str, 워드클라우드 색상 맵
         - save: bool, 그래프 저장 여부
         - save_path: str, 그래프 저장 경로
@@ -185,11 +189,29 @@ def generate_topN_wordcloud(df, mode="category", category=None, category_value=N
             return
 
         word_to_emotions = load_emotion_lexicon()   # 감정 사전 로드
-        word_freq = defaultdict(int)    # 감정 단어 빈도수 저장
-        for word_list in plot_df["emotion_words"]:  # 감정 단어 리스트에서 감정군에 해당하는 단어 빈도수 계산
-            for word in word_list:
-                if word in word_to_emotions and selected_emotion in word_to_emotions[word]:
-                    word_freq[word] += 1
+
+        if value_type == "count":   # 단어 수 기반 
+            word_freq = defaultdict(int)    # 감정 단어 빈도수 저장
+            for word_list in plot_df["emotion_words"]:  # 감정 단어 리스트에서 감정군에 해당하는 단어 빈도수 계산
+                for word in word_list:
+                    if word in word_to_emotions and selected_emotion in word_to_emotions[word]:
+                        word_freq[word] += 1
+        else:   # tfidf 기반
+            selected_words = []
+            for word_list in plot_df["emotion_words"]:
+                for word in word_list:
+                    if word in word_to_emotions and selected_emotion in word_to_emotions[word]:
+                        selected_words.append(word)
+            
+            if selected_words:
+                documents = [" ".join(selected_words)]  # 하나의 문서
+                vectorizer = TfidfVectorizer(tokenizer=lambda x: x.split(), lowercase=False)
+                tfidf_matrix = vectorizer.fit_transform(documents)
+                tfidf_scores = tfidf_matrix.toarray().flatten()
+                feature_names = vectorizer.get_feature_names_out()
+                word_freq = dict(zip(feature_names, tfidf_scores))
+            else:
+                word_freq = {}
 
         if censor_profanity:    # 욕설 단어 censor 처리
             word_freq = {censor_word_list([word])[0]: freq for word, freq in word_freq.items()}
@@ -199,17 +221,28 @@ def generate_topN_wordcloud(df, mode="category", category=None, category_value=N
                        colormap=color_map, regexp=r"\S+").generate(text)
 
         # 제목 설정
-        title = f"{selected_emotion.title()} 감정군 WordCloud"
-        if censor_profanity:
-            title += "(비속어 처리)"
+        if title is None:
+            title = f"{selected_emotion.title()} 감정군 WordCloud"
+            if value_type == "tfidf":
+                title += "(TF-IDF)"
+            if censor_profanity:
+                title += "(비속어 처리)"
 
     # 전체 모드
     else:
-        word_freq = defaultdict(int)    # 감정 단어 빈도수 저장
-        for word_list in plot_df["emotion_words"]:  # 감정 단어 리스트에서 감정군에 해당하는 단어 빈도수 계산
-            for word in word_list:
-                word_freq[word] += 1
-
+        if value_type == "count":
+            word_freq = defaultdict(int)    # 감정 단어 빈도수 저장
+            for word_list in plot_df["emotion_words"]:  # 감정 단어 리스트에서 감정군에 해당하는 단어 빈도수 계산
+                for word in word_list:
+                    word_freq[word] += 1
+        else:
+            docs = plot_df["emotion_words"].apply(lambda x: ' '.join(x) if isinstance(x, list) else "").tolist()
+            vectorizer = TfidfVectorizer(tokenizer=lambda x: x.split(), lowercase=False)
+            tfidf_matrix = vectorizer.fit_transform(docs)
+            tfidf_mean = tfidf_matrix.mean(axis=0).A1
+            feature_names = vectorizer.get_feature_names_out()
+            word_freq = dict(zip(feature_names, tfidf_mean))
+        
         top_words = dict(sorted(word_freq.items(), key=lambda item: item[1], reverse=True)[:top_n])
 
         if censor_profanity:    # 욕설 단어 censor 처리
@@ -220,12 +253,15 @@ def generate_topN_wordcloud(df, mode="category", category=None, category_value=N
                        colormap=color_map, regexp=r"\S+").generate(text)
 
         # 제목 설정
-        if category and category_value:
-            title = f"{category_value.title()} Top {top_n} 감정 단어 WordCloud"
-        else:
-            title = f"Top {top_n} 감정 단어 WordCloud"
-        if censor_profanity:
-            title += "(비속어 처리)"
+        if title is None:
+            if category and category_value:
+                title = f"{category_value.title()} Top {top_n} 감정 단어 WordCloud"
+            else:
+                title = f"Top {top_n} 감정 단어 WordCloud"
+            if value_type == "tfidf":
+                title += "(TF-IDF)"
+            if censor_profanity:
+                title += "(비속어 처리)"
 
     # 시각화
     plt.figure(figsize=(10, 5))
@@ -944,13 +980,3 @@ def plot_topN_artists(df, n=10, score_column="emotion_score", title=None, exclud
         plt.savefig(save_path, dpi=300)
 
     plt.show()
-#####################################################################################################################################
-# 감정군 중심 네트워크 그래프 - 감정군과 장르/아티스트를 연결하는 감정 네트워크
-
-# Sankey Diagram - 감정군 ↔ 장르 ↔ 시대 흐름을 시각화
-
-# 감정군 기준 클러스터링 + t-SNE/UMAP - 감정 분포 기반 곡/장르 클러스터 시각화
-
-# 감정군 기준 클러스터링 + t-SNE/UMAP - 감정 분포 기반 곡/시대 클러스터 시각화
-
-# 감정군 기준 클러스터링 + t-SNE/UMAP - 감정 분포 기반 곡/아티스트 클러스터 시각화
