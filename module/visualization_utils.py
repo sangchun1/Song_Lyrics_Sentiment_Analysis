@@ -741,7 +741,8 @@ def plot_emotion_ratio_stacked_bar(df, emotion_list, category, title=None, save=
 
     # 시각화
     bottom = None
-    plt.figure(figsize=(12, max(6, 0.4 * len(grouped))))
+    # plt.figure(figsize=(12, max(6, 0.4 * len(grouped))))
+    plt.figure(figsize=(10, 8))
     for emo in grouped.columns:
         plt.bar(grouped.index, grouped[emo], bottom=bottom, label=emo)
         bottom = grouped[emo] if bottom is None else bottom + grouped[emo]
@@ -811,7 +812,7 @@ def plot_emotion_trend(df, emotion_list, category="year", category_value=None, v
     grouped.columns = [emo.capitalize() for emo in emotion_list]
 
     # 시각화
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(10, 8))
     for emo in grouped.columns:
         plt.plot(grouped.index, grouped[emo], label=emo)
     plt.title(title)
@@ -906,6 +907,96 @@ def plot_emotion_score_trend(df, score_column="emotion_score", category="year", 
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300)
 
+    plt.show()
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os
+
+def plot_emotion_trend_with_score(df, emotion_list, category="year", category_value=None,
+                                  value_type="ratio", score_column="emotion_score",
+                                  normalized=False, exclude_outliers=False,
+                                  title=None, save=False, save_path=None):
+    """
+    감정군 비율 변화와 감정 점수 평균 추이를 한 그래프에 시각화
+    
+    Parameters:
+    - df: DataFrame
+    - emotion_list: list, 감정군 리스트
+    - category: str, 카테고리 이름
+    - category_value: str, 카테고리 값 (필터링)
+    - value_type: str, "ratio" 또는 "count"
+    - score_column: str, 감정 점수 컬럼 이름
+    - normalized: bool, 정규화 점수 여부
+    - exclude_outliers: bool, 이상치 제거 여부
+    - title: str, 그래프 제목
+    - save: bool, 저장 여부
+    - save_path: str, 저장 경로
+    """
+    # ------------------------
+    # 감정군 비율 데이터 준비
+    # ------------------------
+    col_prefix = f"{value_type}_"
+    target_cols = [f"{col_prefix}{emo}" for emo in emotion_list]
+    plot_df = df.copy()
+    
+    if category_value:
+        plot_df = plot_df[plot_df[category] == category_value]
+        time_col = "year"
+    else:
+        time_col = category
+    
+    grouped_emotions = plot_df.groupby(time_col)[target_cols].mean()
+    grouped_emotions.columns = [emo.capitalize() for emo in emotion_list]
+    
+    # ------------------------
+    # 감정 점수 데이터 준비
+    # ------------------------
+    score_df = df.copy()
+    if exclude_outliers:
+        Q1 = score_df[score_column].quantile(0.25)
+        Q3 = score_df[score_column].quantile(0.75)
+        IQR = Q3 - Q1
+        lower, upper = Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
+        score_df = score_df[(score_df[score_column] >= lower) & (score_df[score_column] <= upper)]
+    
+    if normalized:
+        score_column = "normalized_emotion_score"
+    
+    if category_value:
+        score_df = score_df[score_df[category] == category_value]
+    grouped_score = score_df.groupby(time_col)[score_column].mean()
+    
+    # ------------------------
+    # 시각화
+    # ------------------------
+    plt.figure(figsize=(12, 6))
+    
+    # 감정군 비율 (실선)
+    for emo in grouped_emotions.columns:
+        plt.plot(grouped_emotions.index, grouped_emotions[emo], label=emo)
+    
+    # 감정 점수 (점선, 두꺼운 선)
+    plt.plot(grouped_score.index, grouped_score.values, linestyle="--", color="black", 
+             linewidth=2, marker="o", label="Emotion Score")
+    
+    # 제목, 라벨
+    if not title:
+        title = f"{category.capitalize()}별 감정군 {value_type} & 점수 추이"
+    plt.title(title)
+    plt.xlabel(category.title())
+    plt.ylabel("비율 / 점수")
+    plt.legend()
+    plt.tight_layout()
+    
+    # 저장
+    if save:
+        if save_path is None:
+            filename = f"{title}.png"
+            save_path = f"../results/plots/{category}/{filename}"
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300)
+    
     plt.show()
 #####################################################################################################################################
 def plot_topN_artists(df, n=10, score_column="emotion_score", title=None, exclude_outliers=False, normalized=False, 
