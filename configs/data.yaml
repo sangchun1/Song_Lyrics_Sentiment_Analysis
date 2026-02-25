@@ -1,0 +1,66 @@
+project:
+  name: song-lyrics-research
+  seed: 42
+
+paths:
+  data_dir: data
+  raw_dir: data/raw
+  interim_dir: data/interim
+  processed_dir: data/processed
+
+  assets_dir: assets
+  artifacts_dir: artifacts
+  reports_dir: reports
+
+inputs:
+  # 실제 파일명으로 바꾸세요.
+  raw_lyrics_file: data/raw/lyrics.csv
+
+schema:
+  # raw 데이터에서 필요한 최소 컬럼명 (프로젝트 데이터에 맞게 수정)
+  song_id: song_id
+  title: title
+  artist: artist
+  year: year
+  genre: genre
+  lyrics: lyrics
+
+language_filter:
+  enabled: true
+  method: fasttext        # fasttext / langdetect
+  fasttext_model_path: assets/lid.176.ftz
+  keep_lang: en
+  min_prob: 0.80
+
+text_cleaning:
+  lowercase: true
+  normalize_unicode: true
+  strip: true
+  collapse_whitespace: true
+  remove_brackets: false
+  remove_non_ascii: false
+
+line_processing:
+  split_lines: true
+  keep_empty: false
+  min_line_len: 1
+
+  # "감정/강도 계산용" vs "임베딩용" 텍스트를 분리하기 위한 옵션
+  make_emotion_text: true         # 원본 라인 유지(반복 포함) 쪽
+  make_embedding_text: true       # 임베딩용(반복 처리/정리 적용 가능) 쪽
+
+  # 임베딩용에서만 적용(권장)
+  embedding_dedup:
+    enabled: true
+    strategy: exact              # exact / normalized
+    keep_order: true
+
+  chorus_repeat_features:
+    enabled: true
+    # 반복/후렴 정보를 feature로 저장해두고 싶을 때(메타로 들어감)
+    store_repeat_ratio: true
+    store_repeat_count: true
+
+outputs:
+  processed_file: data/processed/lyrics_processed.parquet
+  lines_file: data/processed/lyrics_lines.parquet

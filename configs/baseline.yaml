@@ -1,0 +1,28 @@
+pipeline:
+  name: baseline
+  seed: 42
+
+baseline:
+  method: emotion_weighted_tfidf    # tfidf / emotion_weighted_tfidf
+  tfidf:
+    max_features: 200000
+    ngram_range: [1, 2]
+    min_df: 2
+    max_df: 0.95
+    sublinear_tf: true
+
+  emotion_weighting:
+    enabled: true
+    # 감정 특징 f(s)를 어떤 방식으로 TF-IDF에 반영할지 구현에 맞춰 고정
+    weight_mode: multiply           # multiply / concat / add
+    alpha: 1.0                      # 가중 강도(스케일)
+
+recommendation:
+  similarity: cosine
+  top_k: 20
+  use_mmr: false                    # baseline은 보통 MMR 없이 비교
+
+outputs:
+  vectorizer_path: artifacts/vectorizers/tfidf_baseline.joblib
+  baseline_vectors_path: artifacts/vectorizers/baseline_vectors.npz
+  report_dir: reports/runs

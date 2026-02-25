@@ -1,0 +1,31 @@
+# Core
+numpy
+pandas
+scipy
+scikit-learn
+tqdm
+pyyaml
+python-dotenv
+pyarrow
+joblib
+
+# Text preprocessing / utilities
+regex
+ftfy
+langdetect
+fasttext-wheel
+
+# Embeddings (Hugging Face / Sentence-Transformers)
+torch
+transformers
+sentence-transformers
+accelerate
+
+# Vector DB (Chroma)
+chromadb
+
+# Experiment tracking
+wandb
+
+# Optional (nice-to-have)
+rich

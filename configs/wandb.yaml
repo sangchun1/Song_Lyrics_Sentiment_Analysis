@@ -1,0 +1,15 @@
+wandb:
+  enabled: true
+  project: lyrics-reco
+  entity: null              # 본인 엔티티(팀/계정). 없으면 null
+  mode: online              # online / offline / disabled
+  tags: ["main"]
+  notes: null
+
+  # run 이름 규칙(코드에서 포맷팅해서 사용)
+  run_name: "{pipeline}_{embed_model}_{timestamp}"
+
+logging:
+  level: INFO
+  save_local_log: true
+  local_log_dir: logs

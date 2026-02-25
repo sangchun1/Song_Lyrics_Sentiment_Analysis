@@ -34,10 +34,8 @@ __pycache__/
 
 # Large Files
 ######################
-dataset/Genius Song Lyrics.csv
-dataset/Top 100 Songs & Lyrics By Year 1959 - 2023 (USA).csv
-data/genius_cleaned.pkl
-data/top100_cleaned.pkl
+data/raw/
+assets/
 
 # OS generated files #
 ######################

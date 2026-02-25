@@ -1,0 +1,79 @@
+pipeline:
+  name: main
+  seed: 42
+
+# data.yaml / wandb.yaml 값을 그대로 쓰는 전제로,
+# 코드에서 config merge(예: data.yaml + wandb.yaml + main.yaml) 하도록 설계하세요.
+
+preprocess:
+  use_processed_cache: true
+  write_interim: true
+
+lexicon:
+  # assets/에 파일만 두는 방식
+  nrc_lexicon_path: assets/NRC-Emotion-Lexicon-Wordlevel-v0.92.txt
+  nrc_intensity_path: assets/NRC-Emotion-Intensity-Lexicon-v1.txt
+  vad_lexicon_path: assets/NRC-VAD-Lexicon.txt
+
+  # 9차원 감정 특징(예: polarity p + group g)
+  # 실제 구현에 맞춰 key만 고정해두면 됩니다.
+  output_dim: 9
+
+embedding:
+  model_name: sentence-transformers/all-MiniLM-L6-v2
+  device: auto              # auto / cpu / cuda
+  batch_size: 64
+  normalize: true
+  cache:
+    enabled: true
+    cache_dir: artifacts/embeddings
+
+emotion_context_vector:
+  # 라인 임베딩 h_i에 가중치 w_i를 줘서 곡 벡터 z(s) 만들기
+  enabled: true
+
+  # 라인 가중치 구성 요소(구현에 맞게 조정)
+  weight:
+    use_emotion_alignment: true    # 곡 전체 경향과 라인 감정 경향의 정합성
+    use_intensity: true            # 라인 강도 반영
+    temperature: 1.0               # soft weighting 쓰면
+    eps: 1e-8
+
+  output:
+    song_vector_name: "z_song"     # 저장 컬럼명(고정 추천)
+
+vectordb:
+  backend: chroma
+  persist_dir: artifacts/indexes/chroma
+  collection: lyrics_song          # 곡 단위 기본 컬렉션
+  distance: cosine                 # cosine / l2 (구현 선택)
+  store_text: true                 # Chroma에 원문 text도 저장할지
+  metadata_fields:
+    - song_id
+    - title
+    - artist
+    - year
+    - genre
+    - unit
+    - repeat_ratio
+    - repeat_count
+
+indexing:
+  unit: song                        # song / line / hybrid
+  id_template: "{song_id}"          # song이면 이렇게, line이면 "{song_id}:{line_id}"
+
+retrieval:
+  enabled: true
+  top_m: 100                        # Chroma에서 후보로 가져올 개수
+  top_k: 20                         # 최종 반환 개수
+
+  mmr:
+    enabled: true
+    lambda: 0.5                     # 0~1 (높을수록 관련성, 낮을수록 다양성)
+    diversity_metric: cosine        # 보통 cosine
+
+evaluation:
+  enabled: true
+  output_dir: reports/runs
+  save_tables: true
+  tables_dir: reports/tables
