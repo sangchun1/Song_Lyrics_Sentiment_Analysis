@@ -35,7 +35,9 @@ __pycache__/
 # Large Files
 ######################
 data/raw/
-assets/
+assets/lexicons/
+assets/lid/
+
 
 # OS generated files #
 ######################
