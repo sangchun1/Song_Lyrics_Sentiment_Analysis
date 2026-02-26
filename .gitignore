@@ -22,6 +22,7 @@
 ######################
 *.log
 *.json
+!assets/slang_map.json
 *.sql
 *.sqlite
 
