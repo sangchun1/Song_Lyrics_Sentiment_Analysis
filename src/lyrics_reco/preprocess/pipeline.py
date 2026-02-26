@@ -1,134 +1,207 @@
 """
-lyrics_reco.baseline.emotion_features
+lyrics_reco.preprocess.pipeline
 
-Lexicon-based feature tables (CSV-friendly), optimized for large N (e.g., 500k).
+End-to-end preprocessing pipeline for Genius Song Lyrics.csv (CSV-first).
 
-- Uses CountVectorizer restricted to NRC vocab (sparse)
-- Computes emotion counts/ratios via matrix multiplication (Xw @ W)
-- Optional intensity/VAD are OFF by default (turn on only if needed)
+Default policy (vectordb-friendly, Option A):
+- Filter years to 1950~2022 (remove weird future years etc.)
+- English filter: language column + optional fastText validation
+- Drop Genius English Translations pages
+- Dedup (title, artist)
+- Trim size with:
+    global Top-N by views + ensure recent-year minimum per year
+- Produce both lyrics_clean and lyrics_dedup
 """
 
 from __future__ import annotations
 
-from typing import Optional, Sequence
+import json
 
-import numpy as np
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, Union
+
 import pandas as pd
-from scipy import sparse
-from sklearn.feature_extraction.text import CountVectorizer
 
-from ..lexicon.load import LexiconsBundle
+from ..common.io import save_csv
+from ..common.paths import PATHS, ProjectPaths
+from .schema import SCHEMA, add_song_id, ensure_columns
+from .filters import (
+    coerce_views,
+    dedup_title_artist,
+    drop_translation_pages,
+    process_genius_translations,
+    expand_multi_artist_rows,
+    filter_year_range,
+    top_n_global,
+    top_n_global_plus_year_floor,
+)
+from .language import english_filter
+from .text_cleaning import clean_lyrics
 
-_TOKEN_PATTERN = r"(?u)\b[a-zA-Z]+(?:'[a-zA-Z]+)?\b"
+
+PathLike = Union[str, Path]
 
 
-def _count_tokens_series(texts: pd.Series) -> np.ndarray:
-    return texts.astype(str).str.count(_TOKEN_PATTERN).fillna(0).astype(int).to_numpy()
+@dataclass(frozen=True)
+class PreprocessConfig:
+    # I/O
+    input_csv: PathLike
+    output_csv: PathLike = "data/processed/genius_processed.csv"
+
+    # Filters
+    start_year: int = 1950
+    end_year: int = 2022
+    drop_translations: bool = True
+    expand_multi_artist: bool = False
+
+    # English filter
+    use_fasttext: bool = True
+    fasttext_model_path: PathLike = "assets/lid/lid.176.bin"
+    fasttext_threshold: float = 0.5
+
+    # Trimming (Option A)
+    top_global: int = 500_000
+
+    recent_year_start: int = 2020
+    recent_year_end: int = 2022
+    recent_min_per_year: int = 20_000  # adjust 10k~30k depending on desired coverage
+
+    # Lyrics cleaning
+    strip_brackets: bool = True
+    remove_tail: bool = True
+    remove_repeat_blocks: bool = True
+
+    # Slang replacement
+    apply_slang: bool = True
+    slang_map_path: PathLike = "assets/slang_map.json"
 
 
-def _safe_divide(num: np.ndarray, den: np.ndarray) -> np.ndarray:
-    den = np.maximum(den, 1e-12)
-    return num / den
+def load_genius_minimal(input_csv: PathLike, *, chunksize: Optional[int] = None) -> pd.DataFrame:
+    """
+    Load Genius CSV. If chunksize is provided, we still return a single DataFrame
+    (trimming happens later), but chunked reading can reduce peak memory during parsing.
+    """
+    if chunksize is None:
+        return pd.read_csv(input_csv)
+
+    parts = []
+    for chunk in pd.read_csv(input_csv, chunksize=chunksize):
+        parts.append(chunk)
+    return pd.concat(parts, ignore_index=True)
 
 
-def build_lexicon_feature_table(
-    df: pd.DataFrame,
-    bundle: LexiconsBundle,
-    *,
-    song_id_col: str = "song_id",
-    text_col: str = "lyrics_clean",
-    emotions: Optional[Sequence[str]] = None,
-    include_intensity: bool = False,
-    include_vad: bool = False,
-    intensity_aggregation: str = "mean",  # mean|sum (max는 비싸서 미지원/근사)
-    vad_aggregation: str = "mean",        # mean|sum
-) -> pd.DataFrame:
-    if song_id_col not in df.columns:
-        raise ValueError(f"missing song_id_col: {song_id_col}")
-    if text_col not in df.columns:
-        raise ValueError(f"missing text_col: {text_col}")
+def preprocess_genius(df: pd.DataFrame, cfg: PreprocessConfig, *, paths: ProjectPaths = PATHS) -> pd.DataFrame:
+    # 1) Keep/rename relevant columns
+    df = ensure_columns(df)
 
-    texts = df[text_col].astype(str)
-    song_ids = df[song_id_col].astype(str).to_numpy()
+    # 2) Drop missing essentials
+    df = df.dropna(subset=["title", "artist", "lyrics"]).copy()
 
-    # ----- NRC emotion counts -----
-    nrc_df = bundle.nrc.df.copy()  # index=word, cols=emotions
-    if emotions is not None:
-        emo_cols = [e.lower() for e in emotions]
-        for e in emo_cols:
-            if e not in nrc_df.columns:
-                nrc_df[e] = 0
-        nrc_df = nrc_df[emo_cols]
-    emo_cols = list(nrc_df.columns)
+    # 3) Year range
+    df = filter_year_range(df, start=cfg.start_year, end=cfg.end_year)
 
-    vocab_words = nrc_df.index.astype(str).tolist()
-    cv = CountVectorizer(vocabulary=vocab_words, lowercase=True, token_pattern=_TOKEN_PATTERN)
-    Xw = cv.fit_transform(texts.tolist())  # (N, V) counts for lexicon words only
+    # 4) Views numeric (for trimming)
+    df = coerce_views(df)
 
-    W = sparse.csr_matrix(nrc_df.values.astype(np.float32))  # (V, E)
-    emo_counts = (Xw @ W).astype(np.float32)                 # (N, E)
-    emo_counts_dense = np.asarray(emo_counts.todense(), dtype=np.float32)
+    # 5) English filter
+    lang_res = english_filter(
+        df,
+        text_col="lyrics",
+        lang_col="language",
+        use_fasttext=cfg.use_fasttext,
+        fasttext_model_path=cfg.fasttext_model_path,
+        fasttext_threshold=cfg.fasttext_threshold,
+        paths=paths,
+    )
+    df = df.loc[lang_res.mask].copy()
 
-    emotion_word_count = np.asarray(Xw.sum(axis=1)).ravel().astype(np.int32)
-    total_tokens = _count_tokens_series(texts)
+    # 6) Optional: drop translation pages
+    if cfg.drop_translations:
+        df = drop_translation_pages(df)
 
-    emo_ratios = np.zeros_like(emo_counts_dense, dtype=np.float32)
-    nz = emotion_word_count > 0
-    emo_ratios[nz] = emo_counts_dense[nz] / emotion_word_count[nz, None]
+    # 7) Optional: expand multi-artist
+    if cfg.expand_multi_artist:
+        df = expand_multi_artist_rows(df)
 
-    out = pd.DataFrame({"song_id": song_ids})
-    for j, e in enumerate(emo_cols):
-        out[f"count_{e}"] = emo_counts_dense[:, j].astype(int)
-        out[f"ratio_{e}"] = emo_ratios[:, j].astype(float)
+    # 8) Dedup (title, artist)
+    df = dedup_title_artist(df)
 
-    out["emotion_word_count"] = emotion_word_count.astype(int)
-    out["total_tokens"] = total_tokens.astype(int)
+    # 9) Trimming (Option A: global top + recent-year floor)
+    if cfg.top_global and cfg.top_global > 0:
+        rs = int(cfg.recent_year_start)
+        re = int(min(cfg.recent_year_end, cfg.end_year))
 
-    # ----- Intensity (optional) -----
-    if include_intensity and bundle.intensity is not None:
-        inten_df = bundle.intensity.df.copy()
-        inten_df = inten_df.reindex(index=nrc_df.index, columns=emo_cols, fill_value=0.0).astype(np.float32)
-        I = sparse.csr_matrix(inten_df.values)  # (V, E)
-
-        inten_sum = (Xw @ I).astype(np.float32)
-        inten_sum_dense = np.asarray(inten_sum.todense(), dtype=np.float32)
-
-        if intensity_aggregation.lower() == "sum":
-            inten_out = inten_sum_dense
+        if cfg.recent_min_per_year and cfg.recent_min_per_year > 0:
+            df = top_n_global_plus_year_floor(
+                df,
+                n_global=int(cfg.top_global),
+                year_start=rs,
+                year_end=re,
+                min_per_year=int(cfg.recent_min_per_year),
+                year_col="year",
+                sort_col="views",
+            )
         else:
-            # mean (default)
-            mask = (inten_df.values > 0).astype(np.float32)
-            M = sparse.csr_matrix(mask)
-            inten_cnt = (Xw @ M).astype(np.float32)
-            inten_cnt_dense = np.asarray(inten_cnt.todense(), dtype=np.float32)
-            inten_out = _safe_divide(inten_sum_dense, inten_cnt_dense)
+            df = top_n_global(df, n=int(cfg.top_global), sort_col="views")
 
-        for j, e in enumerate(emo_cols):
-            out[f"intensity_{e}"] = inten_out[:, j].astype(float)
+    # 10) Clean lyrics (two versions)
+    df = df.copy()
+    df[SCHEMA.lyrics_clean_col] = df["lyrics"].astype(str).map(
+        lambda t: clean_lyrics(
+            t,
+            strip_brackets=cfg.strip_brackets,
+            remove_tail=cfg.remove_tail,
+            keep_newlines=True,
+            remove_repeat_blocks=False,  # clean only
+        )
+    )
+    df[SCHEMA.lyrics_dedup_col] = df["lyrics"].astype(str).map(
+        lambda t: clean_lyrics(
+            t,
+            strip_brackets=cfg.strip_brackets,
+            remove_tail=cfg.remove_tail,
+            keep_newlines=True,
+            remove_repeat_blocks=cfg.remove_repeat_blocks,  # embedding-friendly
+        )
+    )
 
-    # ----- VAD (optional) -----
-    if include_vad and bundle.vad is not None:
-        vad_df = bundle.vad.df.copy()  # index=word, cols=valence/arousal/dominance
-        vad_words = vad_df.index.astype(str).tolist()
+    # 11) Add song_id
+    df = add_song_id(df)
 
-        cv_vad = CountVectorizer(vocabulary=vad_words, lowercase=True, token_pattern=_TOKEN_PATTERN)
-        Xv = cv_vad.fit_transform(texts.tolist())  # (N, Vv)
+    # 12) Final columns
+    keep_cols = [
+        SCHEMA.id_col,
+        "title",
+        "artist",
+        "genre",
+        "year",
+        "views",
+        SCHEMA.lyrics_clean_col,
+        SCHEMA.lyrics_dedup_col,
+    ]
+    keep_cols = [c for c in keep_cols if c in df.columns]
+    df = df[keep_cols].reset_index(drop=True)
 
-        V = vad_df[["valence", "arousal", "dominance"]].astype(np.float32).to_numpy()  # (Vv, 3)
-        Vmat = sparse.csr_matrix(V)
+    return df
 
-        vad_sum = (Xv @ Vmat).astype(np.float32)
-        vad_sum_dense = np.asarray(vad_sum.todense(), dtype=np.float32)
-        vad_cnt = np.asarray(Xv.sum(axis=1)).ravel().astype(np.float32)
 
-        if vad_aggregation.lower() == "sum":
-            vad_out = vad_sum_dense
-        else:
-            vad_out = _safe_divide(vad_sum_dense, vad_cnt[:, None])
+def run_preprocess(cfg: PreprocessConfig, *, paths: ProjectPaths = PATHS, chunksize: Optional[int] = None) -> Path:
+    """
+    Load Genius CSV -> preprocess -> save processed CSV.
 
-        out["valence"] = vad_out[:, 0].astype(float)
-        out["arousal"] = vad_out[:, 1].astype(float)
-        out["dominance"] = vad_out[:, 2].astype(float)
-        out["vad_word_count"] = vad_cnt.astype(int)
+    Returns:
+        output path
+    """
+    inp = Path(cfg.input_csv)
+    if not inp.is_absolute():
+        inp = (paths.root / inp).resolve()
 
-    return out
+    out = Path(cfg.output_csv)
+    if not out.is_absolute():
+        out = (paths.root / out).resolve()
+
+    df_raw = load_genius_minimal(inp, chunksize=chunksize)
+    df_out = preprocess_genius(df_raw, cfg, paths=paths)
+
+    return save_csv(df_out, out, index=False, atomic=True)

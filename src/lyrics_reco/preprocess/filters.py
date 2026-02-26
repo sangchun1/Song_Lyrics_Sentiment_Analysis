@@ -62,34 +62,34 @@ _MULTI_ARTIST_SPLIT_RE = re.compile(r"\s*&\s*")
 
 def expand_multi_artist_rows(df: pd.DataFrame, *, artist_col: str = "artist") -> pd.DataFrame:
     """
-    Expand rows where artist is "A & B" into multiple rows.
+    Expand rows where the artist field contains multiple artists.
 
-    Note:
-    - Only splits on '&' with spaces like "A & B".
-    - Optional because this increases dataset size.
+    Based on your old preprocessing:
+      split on patterns like:
+        - "&", ","
+        - "feat.", "featuring" (case-insensitive)
+        - " X " / " x " (collab notation)
+
+    Example:
+      "A feat. B & C" -> rows with artist "A", "B", "C"
     """
     if artist_col not in df.columns:
         return df
 
+    split_re = re.compile(r"\\s*(?:&|,|feat\\.|Feat\\.|FEAT\\.|featuring|Featuring| X | x )\\s*")
     rows = []
     for _, r in df.iterrows():
-        artist = str(r[artist_col])
-        if " & " not in artist:
+        a = str(r[artist_col])
+        parts = [p.strip() for p in split_re.split(a) if p.strip()]
+        if len(parts) <= 1:
             rows.append(r)
             continue
-
-        parts = [p.strip() for p in _MULTI_ARTIST_SPLIT_RE.split(artist) if p.strip()]
-        if not parts:
-            rows.append(r)
-            continue
-
         for p in parts:
             rr = r.copy()
             rr[artist_col] = p
             rows.append(rr)
 
     return pd.DataFrame(rows).reset_index(drop=True)
-
 
 def dedup_title_artist(df: pd.DataFrame, *, title_col: str = "title", artist_col: str = "artist") -> pd.DataFrame:
     """Deduplicate by (title, artist)."""
