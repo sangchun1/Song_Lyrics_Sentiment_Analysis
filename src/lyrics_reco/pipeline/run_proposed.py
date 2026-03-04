@@ -1,0 +1,480 @@
+"""
+lyrics_reco.pipeline.run_proposed
+
+End-to-end proposed pipeline:
+processed.csv -> emotion_context z(s) -> vectordb upsert -> retrieval -> evaluation
+
+Outputs (under artifacts/runs/<run_id>/):
+- emotion_context_vectors.csv      (optional, if built)
+- proposed_recommendations.csv
+- per_query_metrics.csv
+- summary_metrics.csv
+- run.log / config.json (via common.config + common.logging)
+
+Notes
+-----
+- Retrieval is performed via VectorDB (Chroma) using the full emotion-context vector z(s).
+- Candidate filtering (exclude self / artist / year window) uses retrieval.filters.
+- Optional MMR reranking is applied on the candidate set using *local* vectors only
+  (does not require loading the full NxD matrix into RAM).
+- Evaluation:
+  - EC uses the emotion_ratio slice of z(s)
+  - ILD defaults to emotion_ratio (small memory). You can switch with --ild-space.
+"""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+
+from ..common.config import load_yaml, dump_run_config
+from ..common.logging import setup_run_logger
+from ..common.seed import set_seed
+from ..common.paths import PATHS
+from ..common.io import save_csv
+
+from ..pipeline.utils import cfg_get, sample_queries, make_run_dirs
+
+from ..emotion_context.builder import build_song_vectors_from_df
+from ..vectordb.factory import open_vectordb_from_cfg
+
+from ..retrieval.filters import FilterConfig, filter_candidates
+from ..retrieval.mmr import mmr_rerank
+from ..retrieval.results import build_recommendations_table
+
+from ..evaluation.runner import evaluate_from_rec_table, EvalConfig
+from ..evaluation.pseudo_gt import PseudoGTConfig
+
+
+def _safe_dataclass_init(cls, **kwargs):
+    """Initialize dataclass by filtering unknown kwargs."""
+    fields = getattr(cls, "__dataclass_fields__", {}) or {}
+    return cls(**{k: v for k, v in kwargs.items() if k in fields})
+
+
+def _load_configs(*paths: str) -> Dict[str, Any]:
+    cfg: Dict[str, Any] = {}
+    for p in paths:
+        if not p:
+            continue
+        cfg.update(load_yaml(p))
+    return cfg
+
+
+def _vector_cols(df: pd.DataFrame, prefix: str = "z_") -> List[str]:
+    cols = [c for c in df.columns if c.startswith(prefix)]
+    if not cols:
+        raise ValueError(f"No vector columns found with prefix '{prefix}'")
+
+    def _key(c: str) -> int:
+        try:
+            return int(c.split("_", 1)[1])
+        except Exception:
+            return 10**9
+
+    return sorted(cols, key=_key)
+
+
+def _dist_to_score(dist: float, metric: str) -> float:
+    m = metric.lower()
+    if m == "cosine":
+        return float(1.0 - dist)
+    if m in ("l2", "euclidean"):
+        return float(-dist)
+    return float(dist)
+
+
+def _split_z_components(
+    Z: np.ndarray,
+    *,
+    emotions: Sequence[str],
+    intensity_enabled: bool,
+    vad_enabled: bool,
+) -> Dict[str, np.ndarray]:
+    """
+    Z layout (per emotion_context.concat_song_vector):
+      [embedding | emotion_ratio | intensity? | vad?]
+    """
+    emo_dim = len(list(emotions))
+    tail = emo_dim + (emo_dim if intensity_enabled else 0) + (3 if vad_enabled else 0)
+    d = Z.shape[1]
+    if d < tail:
+        raise ValueError(f"Vector dim too small: D={d}, expected at least tail={tail}")
+    emb_dim = d - tail
+
+    out: Dict[str, np.ndarray] = {}
+    out["embedding"] = Z[:, :emb_dim].astype(np.float32, copy=False)
+    out["emotion_ratio"] = Z[:, emb_dim : emb_dim + emo_dim].astype(np.float32, copy=False)
+
+    pos = emb_dim + emo_dim
+    if intensity_enabled:
+        out["intensity"] = Z[:, pos : pos + emo_dim].astype(np.float32, copy=False)
+        pos += emo_dim
+    if vad_enabled:
+        out["vad"] = Z[:, pos : pos + 3].astype(np.float32, copy=False)
+
+    return out
+
+
+def _upsert_vectors_batched(
+    db,
+    vectors_df: pd.DataFrame,
+    meta_df: pd.DataFrame,
+    *,
+    id_col: str = "song_id",
+    vector_prefix: str = "z_",
+    metadata_cols: Sequence[str] = ("title", "artist", "year", "genre"),
+    batch_size: int = 5000,
+    logger=None,
+) -> None:
+    vec_cols = _vector_cols(vectors_df, prefix=vector_prefix)
+
+    if id_col not in vectors_df.columns:
+        raise ValueError(f"vectors_df missing id_col '{id_col}'")
+    if id_col not in meta_df.columns:
+        raise ValueError(f"meta_df missing id_col '{id_col}'")
+
+    meta_lookup = meta_df.set_index(id_col, drop=False)
+
+    n = len(vectors_df)
+    bs = int(batch_size) if int(batch_size) > 0 else 5000
+
+    for i0 in range(0, n, bs):
+        i1 = min(i0 + bs, n)
+        batch = vectors_df.iloc[i0:i1]
+        ids = batch[id_col].astype(str).tolist()
+        X = batch[vec_cols].to_numpy(dtype=np.float32)
+
+        metadatas = []
+        for sid in ids:
+            if sid in meta_lookup.index:
+                row = meta_lookup.loc[sid]
+                md = {}
+                for c in metadata_cols:
+                    if c in meta_lookup.columns:
+                        v = row[c]
+                        md[c] = None if pd.isna(v) else v
+                metadatas.append(md)
+            else:
+                metadatas.append({})
+
+        db.upsert(ids, X, metadatas=metadatas)
+
+        if logger and (i0 // bs) % 20 == 0:
+            logger.info("Index upsert: %d/%d", i1, n)
+
+
+def _local_mmr_on_candidates(
+    q_vec: np.ndarray,
+    cand_vecs: np.ndarray,
+    cand_scores: np.ndarray,
+    *,
+    top_k: int,
+    lambda_: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Apply MMR using only local (q + candidates) vectors:
+      X_local = [q; candidates], query_index=0, cand_indices=1..M
+    Returns:
+      selected_positions (0..M-1) in candidate arrays, and selected_scores.
+    """
+    if cand_vecs.shape[0] == 0:
+        return np.array([], dtype=int), np.array([], dtype=float)
+
+    X_local = np.vstack([q_vec[None, :], cand_vecs]).astype(np.float32, copy=False)
+    cand_idx_local = np.arange(1, cand_vecs.shape[0] + 1, dtype=int)
+
+    sel_local, sel_sc = mmr_rerank(
+        X_local,
+        query_index=0,
+        cand_indices=cand_idx_local,
+        cand_scores=cand_scores.astype(float, copy=False),
+        top_k=int(top_k),
+        lambda_=float(lambda_),
+        normalize=True,
+    )
+
+    sel_pos = (sel_local - 1).astype(int)
+    return sel_pos, sel_sc
+
+
+def main():
+    ap = argparse.ArgumentParser()
+
+    ap.add_argument("--data", required=True, help="processed CSV (from preprocess)")
+    ap.add_argument("--eval-config", default="configs/eval.yaml")
+    ap.add_argument("--retrieval-config", default="configs/retrieval.yaml")
+    ap.add_argument("--emotion-config", default="configs/emotion_context.yaml")
+
+    ap.add_argument("--seed", type=int, default=42)
+
+    # reuse / load vectors
+    ap.add_argument("--vectors-csv", default="", help="if provided, load precomputed vectors instead of building")
+    ap.add_argument("--save-vectors", action="store_true", default=True)
+    ap.add_argument("--no-save-vectors", dest="save_vectors", action="store_false")
+
+    # index options
+    ap.add_argument("--rebuild-index", action="store_true", default=False)
+
+    # retrieval overrides
+    ap.add_argument("--n-queries", type=int, default=0)
+    ap.add_argument("--top-m", type=int, default=0)
+    ap.add_argument("--top-k", type=int, default=0)
+    ap.add_argument("--disable-mmr", action="store_true", default=False)
+    ap.add_argument("--mmr-lambda", type=float, default=-1.0)
+
+    # evaluation vector space for ILD (memory tradeoff)
+    ap.add_argument("--ild-space", choices=["emotion_ratio", "embedding", "z"], default="emotion_ratio")
+
+    args = ap.parse_args()
+
+    set_seed(args.seed)
+
+    cfg = _load_configs(args.eval_config, args.retrieval_config, args.emotion_config)
+
+    run_cfg = {"pipeline": "run_proposed", "params": vars(args), "merged_cfg": cfg}
+    art_meta = dump_run_config(run_cfg, prefix="proposed")
+
+    run_id = getattr(art_meta, "run_id", None)
+    if run_id is None and isinstance(art_meta, dict):
+        run_id = art_meta.get("run_id")
+    if run_id is None:
+        raise RuntimeError("dump_run_config must return an object/dict with run_id")
+
+    try:
+        logger = setup_run_logger(run_id, name="lyrics_reco", also_to_reports=True)
+    except TypeError:
+        logger = setup_run_logger(run_id)
+
+    art_dir, _ = make_run_dirs(run_id)
+
+    # --- Load processed data ---
+    data_path = Path(args.data)
+    if not data_path.is_absolute():
+        data_path = (PATHS.root / data_path).resolve()
+    meta_df = pd.read_csv(data_path)
+
+    if "song_id" not in meta_df.columns:
+        raise ValueError("processed CSV must contain 'song_id' (did preprocess run?)")
+
+    if "genre" not in meta_df.columns:
+        meta_df["genre"] = "unknown"
+
+    logger.info("Loaded processed data: %s | rows=%d cols=%d", data_path, len(meta_df), len(meta_df.columns))
+
+    # --- Build or load emotion-context vectors ---
+    if args.vectors_csv:
+        vec_path = Path(args.vectors_csv)
+        if not vec_path.is_absolute():
+            vec_path = (PATHS.root / vec_path).resolve()
+        logger.info("Loading vectors from: %s", vec_path)
+        vectors_df = pd.read_csv(vec_path)
+    else:
+        logger.info("Building emotion-context vectors from cfg: %s", args.emotion_config)
+        out_vec = art_dir / "emotion_context_vectors.csv" if args.save_vectors else None
+        vectors_df = build_song_vectors_from_df(meta_df, cfg, out_csv=out_vec, paths=PATHS, logger=logger)
+
+    if "song_id" not in vectors_df.columns:
+        raise ValueError("vectors_df missing 'song_id'")
+    vec_cols = _vector_cols(vectors_df, prefix="z_")
+    logger.info("Vectors ready: rows=%d dim=%d", len(vectors_df), len(vec_cols))
+
+    # Keep only songs that have vectors
+    have = set(vectors_df["song_id"].astype(str).tolist())
+    before = len(meta_df)
+    meta_df = meta_df[meta_df["song_id"].astype(str).isin(have)].reset_index(drop=True)
+    after = len(meta_df)
+    if after != before:
+        logger.warning("Filtered meta_df to songs with vectors: %d -> %d", before, after)
+
+    # Align Z to meta_df order for (small) evaluation slices
+    vectors_lookup = vectors_df.set_index("song_id", drop=False)
+    aligned = vectors_lookup.loc[meta_df["song_id"].astype(str).tolist()]
+    Z = aligned[vec_cols].to_numpy(dtype=np.float32)
+
+    # Derive components for evaluation
+    emotions = [e.lower() for e in cfg_get(cfg, ["emotion", "emotions"], ["anger", "fear", "joy", "sadness", "disgust", "trust"])]
+    intensity_enabled = bool(cfg_get(cfg, ["intensity", "enabled"], True))
+    vad_enabled = bool(cfg_get(cfg, ["vad", "enabled"], True))
+    comps = _split_z_components(Z, emotions=emotions, intensity_enabled=intensity_enabled, vad_enabled=vad_enabled)
+
+    emotion_vectors = comps["emotion_ratio"]
+
+    if args.ild_space == "embedding":
+        item_vectors = comps["embedding"]
+    elif args.ild_space == "z":
+        item_vectors = Z
+    else:
+        item_vectors = comps["emotion_ratio"]
+
+    # --- Open / build VectorDB index ---
+    if args.rebuild_index:
+        cfg = dict(cfg)
+        cfg["index"] = dict(cfg.get("index", {}))
+        cfg["index"]["rebuild"] = True
+
+    db = open_vectordb_from_cfg(cfg)
+
+    do_ingest = bool(cfg_get(cfg, ["index", "rebuild"], False)) or (db.count() == 0)
+    if do_ingest:
+        logger.info("Upserting vectors into VectorDB ...")
+        batch_size = int(cfg_get(cfg, ["index", "batch_size"], 5000))
+        _upsert_vectors_batched(
+            db,
+            vectors_df,
+            meta_df,
+            id_col="song_id",
+            vector_prefix="z_",
+            metadata_cols=("title", "artist", "year", "genre"),
+            batch_size=batch_size,
+            logger=logger,
+        )
+        logger.info("VectorDB upsert done. count=%d", db.count())
+    else:
+        logger.info("VectorDB already has entries. count=%d (skip upsert)", db.count())
+
+    # --- Query sampling ---
+    eval_seed = int(cfg_get(cfg, ["eval", "seed"], args.seed))
+    n_queries = int(cfg_get(cfg, ["eval", "n_queries"], 300))
+    if args.n_queries and args.n_queries > 0:
+        n_queries = int(args.n_queries)
+
+    stratify_by = cfg_get(cfg, ["eval", "query_sampling", "stratify_by"], [])
+    min_per_stratum = int(cfg_get(cfg, ["eval", "query_sampling", "min_per_stratum"], 0))
+    q_idx = sample_queries(meta_df, n_queries=n_queries, seed=eval_seed, stratify_by=stratify_by, min_per_stratum=min_per_stratum)
+    logger.info("Sampled queries: n=%d", len(q_idx))
+
+    # --- Retrieval settings ---
+    top_m = int(cfg_get(cfg, ["retrieval", "top_m"], 200))
+    top_k = int(cfg_get(cfg, ["retrieval", "top_k"], 20))
+    if args.top_m and args.top_m > 0:
+        top_m = int(args.top_m)
+    if args.top_k and args.top_k > 0:
+        top_k = int(args.top_k)
+
+    mmr_enabled = bool(cfg_get(cfg, ["retrieval", "mmr", "enabled"], True))
+    if args.disable_mmr:
+        mmr_enabled = False
+    mmr_lambda = float(cfg_get(cfg, ["retrieval", "mmr", "lambda"], 0.7))
+    if args.mmr_lambda >= 0.0:
+        mmr_lambda = float(args.mmr_lambda)
+
+    # Candidate filters
+    fcfg = FilterConfig(
+        exclude_self=bool(cfg_get(cfg, ["filters", "exclude_same_song"], True)),
+        exclude_same_artist=bool(cfg_get(cfg, ["filters", "exclude_same_artist"], False)),
+        year_window=cfg_get(cfg, ["filters", "year_window"], None),
+        song_id_col="song_id",
+        artist_col="artist",
+        year_col="year",
+    )
+
+    metric = str(cfg_get(cfg, ["index", "metric"], "cosine"))
+
+    # song_id -> meta index
+    sid_to_index = {str(sid): i for i, sid in enumerate(meta_df["song_id"].astype(str).tolist())}
+
+    # --- Retrieval loop ---
+    rec_indices_list: List[np.ndarray] = []
+    rec_scores_list: List[np.ndarray] = []
+
+    for t, qi in enumerate(q_idx.tolist(), start=1):
+        qi = int(qi)
+        q_vec = Z[qi].astype(np.float32, copy=False)
+
+        res = db.query(q_vec, top_k=top_m, where=None, include=["distances"])
+        ids = res.get("ids", [[]])[0]
+        dists = res.get("distances", [[]])[0]
+
+        cand_indices: List[int] = []
+        cand_scores: List[float] = []
+
+        for sid, dist in zip(ids, dists):
+            sid = str(sid)
+            if sid not in sid_to_index:
+                continue
+            cand_indices.append(int(sid_to_index[sid]))
+            cand_scores.append(_dist_to_score(float(dist), metric))
+
+        cand_indices_np = np.asarray(cand_indices, dtype=int)
+        cand_scores_np = np.asarray(cand_scores, dtype=float)
+
+        cand_indices_np, cand_scores_np = filter_candidates(
+            meta_df,
+            query_index=qi,
+            cand_indices=cand_indices_np,
+            cand_scores=cand_scores_np,
+            cfg=fcfg,
+        )
+
+        if cand_indices_np.size == 0:
+            rec_indices_list.append(np.array([], dtype=int))
+            rec_scores_list.append(np.array([], dtype=float))
+            continue
+
+        cand_song_ids_f = [str(meta_df.iloc[int(i)]["song_id"]) for i in cand_indices_np.tolist()]
+
+        if mmr_enabled and cand_indices_np.size > top_k:
+            cand_vecs = np.asarray(vectors_lookup.loc[cand_song_ids_f][vec_cols].to_numpy(dtype=np.float32))
+            sel_pos, sel_sc = _local_mmr_on_candidates(
+                q_vec,
+                cand_vecs,
+                cand_scores_np,
+                top_k=top_k,
+                lambda_=mmr_lambda,
+            )
+            sel_indices = cand_indices_np[sel_pos]
+            sel_scores = sel_sc
+        else:
+            sel_indices = cand_indices_np[:top_k]
+            sel_scores = cand_scores_np[:top_k]
+
+        rec_indices_list.append(sel_indices.astype(int))
+        rec_scores_list.append(np.asarray(sel_scores, dtype=float))
+
+        if t % 25 == 0 or t == len(q_idx):
+            logger.info("Retrieval progress: %d/%d queries", t, len(q_idx))
+
+    rec_df = build_recommendations_table(meta_df, q_idx, rec_indices_list, rec_scores_list)
+    save_csv(rec_df, art_dir / "proposed_recommendations.csv", index=False)
+
+    # --- Evaluation ---
+    k_values = tuple(int(x) for x in cfg_get(cfg, ["eval", "k_values"], [5, 10, 20]))
+    eval_cfg = _safe_dataclass_init(EvalConfig, k_values=k_values)
+
+    pseudo_kwargs = dict(
+        year_window=cfg_get(cfg, ["pseudo_ground_truth", "year_window"], 10),
+        require_same_genre=bool(cfg_get(cfg, ["pseudo_ground_truth", "require_same_genre"], True)),
+        exclude_self=bool(cfg_get(cfg, ["pseudo_ground_truth", "exclude_same_song"], True)),
+        exclude_same_artist=bool(cfg_get(cfg, ["pseudo_ground_truth", "exclude_same_artist"], True)),
+        graded_enabled=bool(cfg_get(cfg, ["pseudo_ground_truth", "graded_relevance", "enabled"], True)),
+        grade_if_same_genre_and_within_year=int(cfg_get(cfg, ["pseudo_ground_truth", "graded_relevance", "grade_if_same_genre_and_within_year"], 2)),
+        grade_if_same_genre_only=int(cfg_get(cfg, ["pseudo_ground_truth", "graded_relevance", "grade_if_same_genre_only"], 0)),
+        max_grade1_per_query=int(cfg_get(cfg, ["pseudo_ground_truth", "graded_relevance", "max_grade1_per_query"], 0)),
+        song_id_col="song_id",
+        artist_col="artist",
+        year_col="year",
+        genre_col="genre",
+    )
+    pseudo_cfg = _safe_dataclass_init(PseudoGTConfig, **pseudo_kwargs)
+
+    evaluate_from_rec_table(
+        meta_df,
+        rec_df,
+        eval_cfg=eval_cfg,
+        pseudo_cfg=pseudo_cfg,
+        emotion_vectors=emotion_vectors,
+        item_vectors=item_vectors,
+        save_dir=art_dir,
+    )
+
+    logger.info("Done. Artifacts in %s", art_dir)
+
+
+if __name__ == "__main__":
+    main()
