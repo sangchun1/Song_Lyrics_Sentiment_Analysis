@@ -102,7 +102,9 @@ def main():
     if not data_path.is_absolute():
         data_path = (PATHS.root / data_path).resolve()
     meta_df = pd.read_csv(data_path)
+    logger.info("Loaded processed data: rows=%d cols=%d", len(meta_df), meta_df.shape[1])
 
+    logger.info("Building baseline vectors (lexicon ratio)...")
     feats_df, X = _build_vectors(
         meta_df,
         cfg,
@@ -150,7 +152,10 @@ def main():
     rec_indices_list = []
     rec_scores_list = []
 
-    for qi in q_idx.tolist():
+    for t_i, qi in enumerate(q_idx.tolist(), start=1):
+        progress_every = 25
+        if t_i == 1 or (t_i % progress_every) == 0:
+            logger.info("Retrieval progress: %d/%d queries", t_i, len(q_idx))
         cand_idx, cand_sc = topk_cosine(X, int(qi), top_k=top_m, exclude_self=False, normalize=False)
         cand_idx, cand_sc = filter_candidates(meta_df, query_index=int(qi), cand_indices=cand_idx, cand_scores=cand_sc, cfg=fcfg)
 

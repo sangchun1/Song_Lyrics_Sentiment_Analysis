@@ -4,15 +4,14 @@ lyrics_reco.preprocess.filters
 Row-level filters and transformations for Genius Song Lyrics dataset.
 
 Key functions:
+- process_genius_translations: convert "Genius English Translations" pages into normal rows
 - filter_year_range: enforce plausible year bounds (default 1950~2022)
-- drop_translation_pages: remove "Genius English Translations" artist pages
-- expand_multi_artist_rows: optional split "A & B" into multiple rows
+- expand_multi_artist_rows: optional split multi-artist strings into multiple rows
 - dedup_title_artist: deduplicate by (title, artist)
 - coerce_views: coerce views to non-negative int
 - top_n_global: global Top-N by views
-- top_n_per_year: per-year Top-N by views (balanced sampling)
-- top_n_global_plus_year_floor: Option A
-    -> global Top-N + ensure recent-year minimum per year
+- top_n_per_year: per-year Top-N by views
+- top_n_global_plus_year_floor: Option A (global top + recent-year floor)
 """
 
 from __future__ import annotations
@@ -21,6 +20,41 @@ import re
 from typing import List
 
 import pandas as pd
+
+
+def process_genius_translations(
+    df: pd.DataFrame,
+    *,
+    artist_col: str = "artist",
+    title_col: str = "title",
+    translation_artist: str = "Genius English Translations",
+) -> pd.DataFrame:
+    """
+    preprocessing.py behavior:
+    Convert translation pages into normal (artist,title) rows (does NOT drop).
+
+    If artist == "Genius English Translations":
+      - artist <- title.split(" - ")[0]
+      - title  <- remove "English Translation"
+      - title  <- remove leading "{artist} - "
+    """
+    if artist_col not in df.columns or title_col not in df.columns:
+        return df
+
+    out = df.copy()
+    mask = out[artist_col].astype(str) == translation_artist
+    if not mask.any():
+        return out
+
+    out.loc[mask, artist_col] = out.loc[mask, title_col].astype(str).str.split(" - ").str[0]
+    out.loc[mask, title_col] = out.loc[mask, title_col].astype(str).str.replace(r"English Translation", "", regex=True)
+
+    for idx in out[mask].index.tolist():
+        art = str(out.at[idx, artist_col])
+        artist_pattern = re.escape(art) + r"\s*-\s*"
+        out.at[idx, title_col] = re.sub(r"^" + artist_pattern, "", str(out.at[idx, title_col])).strip()
+
+    return out
 
 
 def filter_year_range(
@@ -32,7 +66,6 @@ def filter_year_range(
 ) -> pd.DataFrame:
     """
     Keep rows with year in [start, end] (inclusive).
-
     - Coerces year to numeric; invalid years are dropped.
     - Converts year to int.
     """
@@ -45,51 +78,41 @@ def filter_year_range(
     return out
 
 
-def drop_translation_pages(
-    df: pd.DataFrame,
-    *,
-    artist_col: str = "artist",
-    translation_artist: str = "Genius English Translations",
-) -> pd.DataFrame:
-    """Drop Genius translation pages (common noise)."""
-    if artist_col not in df.columns:
-        return df
-    return df[df[artist_col].astype(str) != translation_artist].copy()
-
-
-_MULTI_ARTIST_SPLIT_RE = re.compile(r"\s*&\s*")
-
-
 def expand_multi_artist_rows(df: pd.DataFrame, *, artist_col: str = "artist") -> pd.DataFrame:
     """
-    Expand rows where the artist field contains multiple artists.
+    Split multi-artist rows into multiple rows (preprocessing.py regex).
 
-    Based on your old preprocessing:
-      split on patterns like:
-        - "&", ","
-        - "feat.", "featuring" (case-insensitive)
-        - " X " / " x " (collab notation)
-
-    Example:
-      "A feat. B & C" -> rows with artist "A", "B", "C"
+    Split on:
+      &, , , feat., featuring, X/x
     """
     if artist_col not in df.columns:
         return df
 
-    split_re = re.compile(r"\\s*(?:&|,|feat\\.|Feat\\.|FEAT\\.|featuring|Featuring| X | x )\\s*")
-    rows = []
-    for _, r in df.iterrows():
-        a = str(r[artist_col])
-        parts = [p.strip() for p in split_re.split(a) if p.strip()]
-        if len(parts) <= 1:
-            rows.append(r)
-            continue
-        for p in parts:
-            rr = r.copy()
-            rr[artist_col] = p
-            rows.append(rr)
+    split_re = re.compile(r"\s*(?:&|,|feat\.|Feat\.|FEAT\.|featuring|Featuring| X | x )\s*")
+    expanded_rows = []
 
-    return pd.DataFrame(rows).reset_index(drop=True)
+    for _, row in df.iterrows():
+        artists = split_re.split(str(row[artist_col]))
+        artists = [a.strip() for a in artists if a.strip()]
+
+        if len(artists) > 1:
+            for a in artists:
+                new_row = row.copy()
+                new_row[artist_col] = a
+                expanded_rows.append(new_row)
+
+    if not expanded_rows:
+        return df.reset_index(drop=True)
+
+    expanded_df = pd.DataFrame(expanded_rows)
+    base = df.copy()
+    base[artist_col] = base[artist_col].astype(str)
+
+    # preprocessing.py heuristic: remove rows containing " & " after expansion
+    df_cleaned = base[~base[artist_col].str.contains(" & ", na=False)]
+    final_df = pd.concat([df_cleaned, expanded_df], ignore_index=True)
+    return final_df.reset_index(drop=True)
+
 
 def dedup_title_artist(df: pd.DataFrame, *, title_col: str = "title", artist_col: str = "artist") -> pd.DataFrame:
     """Deduplicate by (title, artist)."""
@@ -161,15 +184,11 @@ def top_n_global_plus_year_floor(
     if n_global <= 0:
         base = df.copy()
     else:
-        if sort_col not in df.columns:
-            base = df.head(n_global).copy()
-        else:
-            base = df.nlargest(n_global, sort_col).copy()
+        base = df.nlargest(n_global, sort_col).copy() if sort_col in df.columns else df.head(n_global).copy()
 
     if min_per_year <= 0 or year_col not in df.columns:
         return base.reset_index(drop=True)
 
-    # Track original row indices already included
     base_idx = set(base.index)
     extras: List[pd.DataFrame] = []
 
@@ -182,23 +201,15 @@ def top_n_global_plus_year_floor(
         cand = df[df[year_col] == y].copy()
         if cand.empty:
             continue
-
-        if sort_col in cand.columns:
-            cand = cand.sort_values(sort_col, ascending=False)
-
-        # remove already selected rows by original index
+        cand = cand.sort_values(sort_col, ascending=False) if sort_col in cand.columns else cand
         cand = cand.loc[~cand.index.isin(base_idx)]
         if cand.empty:
             continue
-
         extras.append(cand.head(need))
 
     if not extras:
         return base.reset_index(drop=True)
 
     out = pd.concat([base] + extras, axis=0)
-
-    # Ensure uniqueness by original index
     out = out[~out.index.duplicated(keep="first")]
-
     return out.reset_index(drop=True)

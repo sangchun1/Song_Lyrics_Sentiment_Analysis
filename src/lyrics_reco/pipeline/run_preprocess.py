@@ -22,9 +22,9 @@ def main():
     ap.add_argument("--start-year", type=int, default=1950)
     ap.add_argument("--end-year", type=int, default=2022)
 
-    ap.add_argument("--drop-translations", dest="drop_translations", action="store_true")
-    ap.add_argument("--no-drop-translations", dest="drop_translations", action="store_false")
-    ap.set_defaults(drop_translations=True)
+    ap.add_argument("--process-genius-translations", dest="process_genius_translations", action="store_true")
+    ap.add_argument("--no-process-genius-translations", dest="process_genius_translations", action="store_false")
+    ap.set_defaults(process_genius_translations=True)
 
     ap.add_argument("--expand-multi-artist", action="store_true", default=False)
 
@@ -50,7 +50,7 @@ def main():
         output_csv=args.output,
         start_year=args.start_year,
         end_year=args.end_year,
-        drop_translations=args.drop_translations,
+        process_genius_translations=args.process_genius_translations,
         expand_multi_artist=args.expand_multi_artist,
         use_fasttext=args.use_fasttext,
         fasttext_model_path=args.fasttext_model,
@@ -63,10 +63,11 @@ def main():
 
     run_cfg = {"pipeline": "run_preprocess", "params": vars(args)}
     art = dump_run_config(run_cfg, prefix="preprocess")
-    logger = setup_run_logger(art.run_id, name="lyrics_reco", also_to_reports=True)
+    logger = setup_run_logger(art.run_id, name="lyrics_reco", also_to_reports=True, reset_handlers=True, use_rich_console=False)
     set_seed(args.seed)
 
     ch = None if args.chunksize <= 0 else int(args.chunksize)
+    logger.info("Starting preprocessing...")
     out = run_preprocess(cfg, chunksize=ch)
     logger.info("Preprocess done. Output: %s", out)
 

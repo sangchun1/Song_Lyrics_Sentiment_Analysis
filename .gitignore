@@ -35,9 +35,10 @@ __pycache__/
 
 # Large Files
 ######################
-data/raw/
+data/
 assets/lexicons/
 assets/lid/
+artifacts/
 
 
 # OS generated files #
@@ -49,3 +50,6 @@ assets/lid/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+src/lyrics_reco.egg-info/
+command.md
