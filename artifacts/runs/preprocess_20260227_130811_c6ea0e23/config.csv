@@ -1,0 +1,17 @@
+﻿key,value
+params.chunksize,200000
+params.end_year,2022
+params.expand_multi_artist,False
+params.fasttext_model,assets/lid/lid.176.bin
+params.fasttext_threshold,0.5
+params.input,data/raw/Genius Song Lyrics.csv
+params.output,data/processed/genius_processed.csv
+params.process_genius_translations,True
+params.recent_min_per_year,20000
+params.recent_year_end,2022
+params.recent_year_start,2020
+params.seed,42
+params.start_year,1950
+params.top_global,500000
+params.use_fasttext,False
+pipeline,run_preprocess

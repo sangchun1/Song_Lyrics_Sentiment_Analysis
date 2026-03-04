@@ -1,0 +1,20 @@
+{
+  "pipeline": "run_preprocess",
+  "params": {
+    "input": "data/raw/Genius Song Lyrics.csv",
+    "output": "data/processed/genius_processed.csv",
+    "start_year": 1950,
+    "end_year": 2022,
+    "process_genius_translations": true,
+    "expand_multi_artist": false,
+    "use_fasttext": false,
+    "fasttext_threshold": 0.5,
+    "fasttext_model": "assets/lid/lid.176.bin",
+    "top_global": 500000,
+    "recent_year_start": 2020,
+    "recent_year_end": 2022,
+    "recent_min_per_year": 20000,
+    "seed": 42,
+    "chunksize": 200000
+  }
+}
