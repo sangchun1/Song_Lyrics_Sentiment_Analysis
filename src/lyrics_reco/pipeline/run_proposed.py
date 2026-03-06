@@ -89,6 +89,22 @@ def _dist_to_score(dist: float, metric: str) -> float:
     return float(dist)
 
 
+def _to_python_scalar(v: Any) -> Any:
+    if pd.isna(v):
+        return None
+
+    # numpy scalar -> python scalar
+    if isinstance(v, np.generic):
+        return v.item()
+
+    # plain python types
+    if isinstance(v, (str, int, float, bool)):
+        return v
+
+    # fallback
+    return str(v)
+
+
 def _split_z_components(
     Z: np.ndarray,
     *,
@@ -154,11 +170,16 @@ def _upsert_vectors_batched(
         for sid in ids:
             if sid in meta_lookup.index:
                 row = meta_lookup.loc[sid]
+
+                # duplicate ids -> DataFrame
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[0]
+
                 md = {}
                 for c in metadata_cols:
                     if c in meta_lookup.columns:
-                        v = row[c]
-                        md[c] = None if pd.isna(v) else v
+                        md[c] = _to_python_scalar(row[c])
+
                 metadatas.append(md)
             else:
                 metadatas.append({})
@@ -265,6 +286,12 @@ def main():
     if "genre" not in meta_df.columns:
         meta_df["genre"] = "unknown"
 
+    meta_before = len(meta_df)
+    meta_df = meta_df.drop_duplicates(subset=["song_id"], keep="first").reset_index(drop=True)
+    meta_after = len(meta_df)
+    if meta_after != meta_before:
+        logger.warning("Deduplicated meta_df by song_id: %d -> %d", meta_before, meta_after)
+
     logger.info("Loaded processed data: %s | rows=%d cols=%d", data_path, len(meta_df), len(meta_df.columns))
 
     # --- Build or load emotion-context vectors ---
@@ -281,6 +308,14 @@ def main():
 
     if "song_id" not in vectors_df.columns:
         raise ValueError("vectors_df missing 'song_id'")
+
+    # deduplicate vectors by song_id (Chroma ids must be unique)
+    vec_before = len(vectors_df)
+    vectors_df = vectors_df.drop_duplicates(subset=["song_id"], keep="first").reset_index(drop=True)
+    vec_after = len(vectors_df)
+    if vec_after != vec_before:
+        logger.warning("Deduplicated vectors_df by song_id: %d -> %d", vec_before, vec_after)
+
     vec_cols = _vector_cols(vectors_df, prefix="z_")
     logger.info("Vectors ready: rows=%d dim=%d", len(vectors_df), len(vec_cols))
 

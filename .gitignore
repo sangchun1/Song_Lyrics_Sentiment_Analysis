@@ -25,6 +25,7 @@
 !assets/slang_map.json
 *.sql
 *.sqlite
+*.sqlite3
 
 # Python cache
 ######################
@@ -38,7 +39,8 @@ __pycache__/
 data/
 assets/lexicons/
 assets/lid/
-# artifacts/
+artifacts/indexes/
+# *.csv
 
 
 # OS generated files #
