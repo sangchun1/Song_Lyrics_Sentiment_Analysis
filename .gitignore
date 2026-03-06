@@ -40,7 +40,7 @@ data/
 assets/lexicons/
 assets/lid/
 artifacts/indexes/
-# *.csv
+artifacts/runs/proposed_20260305_221715_966c26f9/emotion_context_vectors.csv
 
 
 # OS generated files #
