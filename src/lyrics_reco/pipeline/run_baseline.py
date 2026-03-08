@@ -5,8 +5,9 @@ Baseline retrieval + evaluation pipeline (lexicon ratio vectors).
 
 Main change in this version:
 - keeps the per-run vector CSV under artifacts/runs/<run_id>/ when requested
-- additionally maintains a central copy under artifacts/vectors/baseline_vectors.csv
-  so demo / quickstart code can load it directly
+- maintains a central demo-friendly baseline vector artifact under artifacts/vectors/
+  (NPZ by default, optional CSV/both)
+- also saves baseline_song_ids.npy so demo can align rows safely
 """
 
 from __future__ import annotations
@@ -24,7 +25,12 @@ from ..common.io import save_csv
 from ..common.logging import setup_run_logger
 from ..common.paths import PATHS
 from ..common.seed import set_seed
-from ..common.vector_store import copy_vector_csv, save_central_vectors
+from ..common.vector_store import (
+    copy_vector_csv,
+    save_central_vectors,
+    save_dense_vectors_npz,
+    save_song_ids,
+)
 from ..evaluation.pseudo_gt import PseudoGTConfig
 from ..evaluation.runner import EvalConfig, evaluate_from_rec_table
 from ..lexicon.load import load_lexicons_from_cfg
@@ -95,7 +101,7 @@ def parse_args() -> argparse.Namespace:
         dest="save_central_vectors",
         action="store_true",
         default=True,
-        help="Save a central demo-friendly copy under artifacts/vectors/baseline_vectors.csv",
+        help="Save a central demo-friendly baseline vector artifact under artifacts/vectors/",
     )
     ap.add_argument(
         "--no-save-central-vectors",
@@ -105,7 +111,18 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--central-vectors-out",
         default="",
-        help="Optional override path for the central baseline vectors CSV",
+        help="Optional override path for the central baseline vectors artifact. If omitted, a default under artifacts/vectors/ is used.",
+    )
+    ap.add_argument(
+        "--central-song-ids-out",
+        default="",
+        help="Optional override path for baseline song_id mapping (.npy).",
+    )
+    ap.add_argument(
+        "--central-format",
+        choices=["npz", "csv", "both"],
+        default="npz",
+        help="Format for the central baseline vectors artifact.",
     )
 
     ap.add_argument("--n-queries", type=int, default=0)
@@ -147,15 +164,34 @@ def main() -> None:
     run_vec_path = None
     if args.save_vectors_csv:
         run_vec_path = save_csv(feats_df, art_dir / "baseline_lexicon_features.csv", index=False)
-        logger.info("Saved run baseline vectors: %s", run_vec_path)
+        logger.info("Saved run baseline vectors CSV: %s", run_vec_path)
 
     if args.save_central_vectors:
-        central_out = args.central_vectors_out or None
-        if run_vec_path is not None:
-            central_path = copy_vector_csv(run_vec_path, "baseline", out_path=central_out, paths=PATHS)
-        else:
-            central_path = save_central_vectors(feats_df, "baseline", out_path=central_out, paths=PATHS)
-        logger.info("Saved central baseline vectors: %s", central_path)
+        if args.central_format in {"csv", "both"}:
+            central_out_csv = args.central_vectors_out if args.central_vectors_out.lower().endswith(".csv") else None
+            if run_vec_path is not None and central_out_csv is not None:
+                central_csv_path = copy_vector_csv(run_vec_path, "baseline", out_path=central_out_csv, paths=PATHS)
+            else:
+                central_csv_path = save_central_vectors(
+                    feats_df,
+                    "baseline",
+                    out_path=central_out_csv,
+                    paths=PATHS,
+                )
+            logger.info("Saved central baseline vectors CSV: %s", central_csv_path)
+
+        if args.central_format in {"npz", "both"}:
+            central_npz_out = args.central_vectors_out if args.central_vectors_out.lower().endswith(".npz") else None
+            central_npz_path = save_dense_vectors_npz(X, "baseline", out_path=central_npz_out, paths=PATHS)
+            logger.info("Saved central baseline vectors NPZ: %s", central_npz_path)
+
+        song_ids_path = save_song_ids(
+            feats_df["song_id"].astype(str).to_numpy(),
+            "baseline",
+            out_path=args.central_song_ids_out or None,
+            paths=PATHS,
+        )
+        logger.info("Saved central baseline song ids: %s", song_ids_path)
 
     eval_seed = int(cfg_get(cfg, ["eval", "seed"], args.seed))
     n_queries = int(cfg_get(cfg, ["eval", "n_queries"], 500))

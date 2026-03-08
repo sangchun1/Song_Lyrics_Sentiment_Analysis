@@ -7,7 +7,7 @@ Highlights
 ----------
 - Resolves repo root robustly.
 - Creates directories lazily via helpers.
-- Keeps all tabular outputs CSV-first.
+- Keeps all tabular outputs CSV-first where appropriate.
 - Adds a central vector store under ``artifacts/vectors`` so demo / quickstart
   code does not need to guess a run directory.
 """
@@ -119,11 +119,24 @@ class ProjectPaths:
         base = self.rep_tables if subdir is None else (self.rep_tables / subdir)
         return with_suffix_csv(base / name)
 
+    # central vector store -----------------------------------------------------
     def baseline_vectors_csv(self) -> Path:
         return self.art_vectors / "baseline_vectors.csv"
 
+    def baseline_vectors_npz(self) -> Path:
+        return self.art_vectors / "baseline_vectors.npz"
+
+    def baseline_song_ids_npy(self) -> Path:
+        return self.art_vectors / "baseline_song_ids.npy"
+
     def proposed_vectors_csv(self) -> Path:
         return self.art_vectors / "proposed_vectors.csv"
+
+    def proposed_vectors_npz(self) -> Path:
+        return self.art_vectors / "proposed_vectors.npz"
+
+    def proposed_song_ids_npy(self) -> Path:
+        return self.art_vectors / "proposed_song_ids.npy"
 
     def demo_dir(self) -> Path:
         return ensure_dir(self.art_demo)

@@ -21,21 +21,20 @@ Recommended usage
 2) Direct file execution from repo root
    python src/lyrics_reco/cli/demo.py --title "Hello" --artist "Adele" --k 10
 
-Notes
------
-- Baseline path priority:
-    1) --baseline-vectors
-    2) artifacts/vectors/baseline_vectors.csv
-    3) legacy artifacts/vectorizers/baseline_vectors.npz
-    4) latest artifacts/runs/*/baseline_lexicon_features.csv
-- Proposed path priority:
-    1) --proposed-vectors
-    2) artifacts/vectors/proposed_vectors.csv
-    3) latest artifacts/runs/*/emotion_context_vectors.csv
-- Emotion similarity priority:
-    1) ratio_/VAD columns already present in the processed data CSV
-    2) ratio_/VAD columns from baseline CSV (if used)
-    3) parsed tail of proposed z-vectors using configs/emotion_context.yaml
+Supported vector formats
+------------------------
+- Baseline: .npz or .csv
+- Proposed: .csv, .npz, .npy
+
+Recommended artifacts/vectors layout
+------------------------------------
+- artifacts/vectors/baseline_vectors.npz
+- artifacts/vectors/baseline_song_ids.npy (recommended with baseline npz)
+- artifacts/vectors/proposed_vectors.npz  (or .npy / .csv)
+- artifacts/vectors/proposed_song_ids.npy (needed when proposed npz/npy row order
+  is not guaranteed to match the metadata file)
+- artifacts/vectors/catalog.csv           (song_id/title/artist/year/genre mapping)
+- artifacts/vectors/emotion_profiles.csv  (optional)
 """
 
 import argparse
@@ -45,7 +44,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -61,8 +60,6 @@ if __package__ in (None, ""):
 else:
     REPO_ROOT = Path(__file__).resolve().parents[3]
 
-from lyrics_reco.common.paths import PATHS  # noqa: E402
-from lyrics_reco.common.vector_store import default_vector_path  # noqa: E402
 from lyrics_reco.retrieval.cosine import topk_cosine  # noqa: E402
 from lyrics_reco.retrieval.mmr import mmr_rerank  # noqa: E402
 
@@ -82,6 +79,7 @@ def _resolve_path(path_str: str | Path) -> Path:
     return (REPO_ROOT / p).resolve()
 
 
+
 def _latest_existing(patterns: Sequence[str]) -> Optional[Path]:
     candidates: list[Path] = []
     for pat in patterns:
@@ -89,22 +87,70 @@ def _latest_existing(patterns: Sequence[str]) -> Optional[Path]:
     return candidates[-1].resolve() if candidates else None
 
 
+
+def _first_existing(paths: Sequence[str]) -> Optional[Path]:
+    for p in paths:
+        rp = _resolve_path(p)
+        if rp.exists():
+            return rp
+    return None
+
+
+
 def _default_baseline_path() -> Optional[Path]:
-    central_or_latest = default_vector_path("baseline", paths=PATHS)
-    if central_or_latest is not None:
-        return central_or_latest
-    direct = _resolve_path("artifacts/vectorizers/baseline_vectors.npz")
-    if direct.exists():
+    direct = _first_existing(
+        [
+            "artifacts/vectors/baseline_vectors.npz",
+            "artifacts/vectors/baseline_vectors.csv",
+            "artifacts/vectorizers/baseline_vectors.npz",
+        ]
+    )
+    if direct is not None:
         return direct
-    return _latest_existing(["artifacts/runs/*/baseline_lexicon_features.csv"])
+    return _latest_existing([
+        "artifacts/runs/*/baseline_lexicon_features.csv",
+        "artifacts/runs/*/baseline_vectors.csv",
+    ])
+
+
+
+def _default_baseline_song_ids_path() -> Optional[Path]:
+    return _first_existing(["artifacts/vectors/baseline_song_ids.npy"])
+
 
 
 def _default_proposed_path() -> Optional[Path]:
-    return default_vector_path("proposed", paths=PATHS)
+    direct = _first_existing(
+        [
+            "artifacts/vectors/proposed_vectors.npz",
+            "artifacts/vectors/proposed_vectors.npy",
+            "artifacts/vectors/proposed_vectors.csv",
+        ]
+    )
+    if direct is not None:
+        return direct
+    return _latest_existing([
+        "artifacts/runs/*/emotion_context_vectors.csv",
+        "artifacts/runs/*/proposed_vectors.csv",
+    ])
 
 
-def _default_save_dir() -> Path:
-    return PATHS.demo_dir()
+
+def _default_catalog_path() -> Optional[Path]:
+    return _first_existing([
+        "artifacts/vectors/catalog.csv",
+        "data/processed/genius_processed.csv",
+    ])
+
+
+
+def _default_emotion_profiles_path() -> Optional[Path]:
+    return _first_existing(["artifacts/vectors/emotion_profiles.csv"])
+
+
+
+def _default_proposed_song_ids_path() -> Optional[Path]:
+    return _first_existing(["artifacts/vectors/proposed_song_ids.npy"])
 
 
 # -----------------------------------------------------------------------------
@@ -118,11 +164,13 @@ def _slugify(text: str, max_len: int = 80) -> str:
     return text[:max_len] or "query"
 
 
+
 def _cosine_pair(u: np.ndarray, v: np.ndarray, eps: float = 1e-12) -> float:
     u = np.asarray(u, dtype=np.float32).ravel()
     v = np.asarray(v, dtype=np.float32).ravel()
     den = max(float(np.linalg.norm(u)) * float(np.linalg.norm(v)), eps)
     return float(np.dot(u, v) / den)
+
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -133,11 +181,13 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return data
 
 
+
 def _safe_float(v: Any) -> float:
     try:
         return float(v)
     except Exception:
         return float("nan")
+
 
 
 def _print_table(title: str, df: pd.DataFrame) -> None:
@@ -176,6 +226,18 @@ def _print_table(title: str, df: pd.DataFrame) -> None:
 
 def _normalize_text(s: pd.Series) -> pd.Series:
     return s.astype(str).str.strip().str.casefold()
+
+
+
+def _ensure_meta_cols(meta_df: pd.DataFrame) -> pd.DataFrame:
+    if "song_id" not in meta_df.columns:
+        raise ValueError("Metadata file must contain 'song_id'")
+    out = meta_df.copy()
+    for c in ["title", "artist", "year", "genre"]:
+        if c not in out.columns:
+            out[c] = pd.NA
+    return out
+
 
 
 def resolve_query_index(
@@ -256,7 +318,6 @@ EXCLUDE_NUMERIC_COLS = {
     "views",
 }
 
-
 META_TEXT_COLS = {
     "title",
     "artist",
@@ -307,7 +368,7 @@ def _align_vector_df_to_meta(meta_df: pd.DataFrame, vec_df: pd.DataFrame, vector
     if "song_id" not in vec_df.columns:
         if len(vec_df) != len(meta_df):
             raise ValueError(
-                "Vector CSV has no song_id column and row count differs from data CSV. "
+                "Vector CSV has no song_id column and row count differs from metadata rows. "
                 "Cannot align safely."
             )
         aligned = vec_df.copy()
@@ -323,10 +384,51 @@ def _align_vector_df_to_meta(meta_df: pd.DataFrame, vec_df: pd.DataFrame, vector
     missing = aligned[vector_cols].isna().all(axis=1).sum()
     if missing > 0:
         raise ValueError(
-            f"{missing} songs from data CSV were missing in vector file. "
-            "Make sure vectors were built from the same processed CSV."
+            f"{missing} songs from metadata were missing in vector file. "
+            "Make sure vectors were built from the same processed CSV/catalog."
         )
     return aligned
+
+
+
+def _align_matrix_to_meta(
+    meta_df: pd.DataFrame,
+    X: ArrayLike,
+    *,
+    array_song_ids: Optional[np.ndarray] = None,
+) -> ArrayLike:
+    if getattr(X, "ndim", None) != 2:
+        raise ValueError(f"Expected 2D vector matrix, got shape={getattr(X, 'shape', None)}")
+
+    if array_song_ids is None:
+        if X.shape[0] != len(meta_df):
+            raise ValueError(
+                f"Vector rows ({X.shape[0]}) do not match metadata rows ({len(meta_df)}), "
+                "and no song_id mapping was provided."
+            )
+        return X
+
+    song_ids = np.asarray(array_song_ids).astype(str)
+    if len(song_ids) != X.shape[0]:
+        raise ValueError(
+            f"song_id array length ({len(song_ids)}) does not match vector rows ({X.shape[0]})."
+        )
+
+    map_index = {sid: i for i, sid in enumerate(song_ids.tolist())}
+    order: list[int] = []
+    missing: list[str] = []
+    for sid in meta_df["song_id"].astype(str).tolist():
+        idx = map_index.get(sid)
+        if idx is None:
+            missing.append(sid)
+        else:
+            order.append(idx)
+    if missing:
+        raise ValueError(
+            f"{len(missing)} songs from metadata were missing in the song_id mapping for the vector array."
+        )
+    order_arr = np.asarray(order, dtype=np.int64)
+    return X[order_arr]
 
 
 
@@ -344,6 +446,9 @@ def _load_sparse_or_dense_npz(path: Path) -> ArrayLike:
                 shape=tuple(obj["shape"]),
             )
 
+        if "X" in keys and getattr(obj["X"], "ndim", 0) == 2:
+            return np.asarray(obj["X"], dtype=np.float32)
+
         array_candidates: list[np.ndarray] = []
         for k in keys:
             arr = obj[k]
@@ -355,7 +460,12 @@ def _load_sparse_or_dense_npz(path: Path) -> ArrayLike:
 
 
 
-def load_baseline_vectors(meta_df: pd.DataFrame, path: Path) -> LoadedVectors:
+def load_baseline_vectors(
+    meta_df: pd.DataFrame,
+    path: Path,
+    *,
+    baseline_song_ids_path: Optional[Path] = None,
+) -> LoadedVectors:
     path = path.resolve()
     if not path.exists():
         raise FileNotFoundError(path)
@@ -370,27 +480,52 @@ def load_baseline_vectors(meta_df: pd.DataFrame, path: Path) -> LoadedVectors:
         return LoadedVectors(matrix=X, vector_cols=vector_cols, source_path=path, auxiliary_df=aligned)
 
     if path.suffix.lower() == ".npz":
+        song_ids = None
+        if baseline_song_ids_path is not None and baseline_song_ids_path.exists():
+            song_ids = np.load(baseline_song_ids_path, allow_pickle=True)
         X = _load_sparse_or_dense_npz(path)
-        if X.shape[0] != len(meta_df):
-            raise ValueError(
-                f"Baseline vector rows ({X.shape[0]}) do not match data rows ({len(meta_df)})."
-            )
+        X = _align_matrix_to_meta(meta_df, X, array_song_ids=song_ids)
         return LoadedVectors(matrix=X, vector_cols=[], source_path=path, auxiliary_df=None)
 
     raise ValueError(f"Unsupported baseline vector format: {path.suffix}")
 
 
 
-def load_proposed_vectors(meta_df: pd.DataFrame, path: Path) -> LoadedVectors:
+def load_proposed_vectors(
+    meta_df: pd.DataFrame,
+    path: Path,
+    *,
+    proposed_song_ids_path: Optional[Path] = None,
+) -> LoadedVectors:
     path = path.resolve()
     if not path.exists():
         raise FileNotFoundError(path)
 
-    df = pd.read_csv(path)
-    vector_cols = _infer_proposed_csv_vector_cols(df)
-    aligned = _align_vector_df_to_meta(meta_df, df, vector_cols)
-    X = aligned[vector_cols].to_numpy(dtype=np.float32)
-    return LoadedVectors(matrix=X, vector_cols=vector_cols, source_path=path, auxiliary_df=aligned)
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        df = pd.read_csv(path)
+        vector_cols = _infer_proposed_csv_vector_cols(df)
+        aligned = _align_vector_df_to_meta(meta_df, df, vector_cols)
+        X = aligned[vector_cols].to_numpy(dtype=np.float32)
+        return LoadedVectors(matrix=X, vector_cols=vector_cols, source_path=path, auxiliary_df=aligned)
+
+    array_song_ids: Optional[np.ndarray] = None
+    if proposed_song_ids_path is not None and proposed_song_ids_path.exists():
+        array_song_ids = np.load(proposed_song_ids_path, allow_pickle=True)
+
+    if suffix == ".npz":
+        X = _load_sparse_or_dense_npz(path)
+        if sparse.issparse(X):
+            X = X.toarray()
+        X = _align_matrix_to_meta(meta_df, np.asarray(X, dtype=np.float32), array_song_ids=array_song_ids)
+        return LoadedVectors(matrix=X, vector_cols=[], source_path=path, auxiliary_df=None)
+
+    if suffix == ".npy":
+        X = np.load(path, allow_pickle=True)
+        X = _align_matrix_to_meta(meta_df, np.asarray(X, dtype=np.float32), array_song_ids=array_song_ids)
+        return LoadedVectors(matrix=X, vector_cols=[], source_path=path, auxiliary_df=None)
+
+    raise ValueError(f"Unsupported proposed vector format: {path.suffix}")
 
 
 # -----------------------------------------------------------------------------
@@ -473,13 +608,21 @@ def build_emotion_matrix(
     proposed_matrix: np.ndarray,
     emotion_cfg_path: Path,
     mode: str,
+    emotion_profiles_df: Optional[pd.DataFrame] = None,
 ) -> tuple[np.ndarray, list[str], str]:
-    # 1) processed data CSV itself
+    if emotion_profiles_df is not None:
+        emotion_profile_cols = _emotion_cols_from_df(emotion_profiles_df, mode=mode)
+        if emotion_profile_cols:
+            return (
+                emotion_profiles_df[emotion_profile_cols].fillna(0.0).to_numpy(dtype=np.float32),
+                emotion_profile_cols,
+                "emotion_profiles_csv",
+            )
+
     direct_cols = _emotion_cols_from_df(meta_df, mode=mode)
     if direct_cols:
         return meta_df[direct_cols].fillna(0.0).to_numpy(dtype=np.float32), direct_cols, "data_csv"
 
-    # 2) baseline CSV if present
     if baseline_aux_df is not None:
         aux_cols = _emotion_cols_from_df(baseline_aux_df, mode=mode)
         if aux_cols:
@@ -489,7 +632,6 @@ def build_emotion_matrix(
                 "baseline_csv",
             )
 
-    # 3) parse proposed z-vector tail using config
     emotion_cfg = _load_yaml(emotion_cfg_path)
     E, cols = _emotion_matrix_from_proposed_tail(proposed_matrix, emotion_cfg, mode=mode)
     return E, cols, "proposed_tail"
@@ -625,12 +767,36 @@ def run_one_model(
 # -----------------------------------------------------------------------------
 
 
-
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Compare baseline vs proposed recommendations")
-    ap.add_argument("--data", default="data/processed/genius_processed.csv", help="Processed CSV path")
-    ap.add_argument("--baseline-vectors", default="", help="Baseline vectors CSV (preferred) or legacy .npz")
-    ap.add_argument("--proposed-vectors", default="", help="Proposed vectors CSV")
+    ap.add_argument(
+        "--data",
+        default="data/processed/genius_processed.csv",
+        help="Processed CSV path (used as fallback metadata/emotion source)",
+    )
+    ap.add_argument(
+        "--catalog",
+        default="",
+        help="Metadata CSV with at least song_id and ideally title/artist/year/genre. "
+        "Defaults to artifacts/vectors/catalog.csv if present, otherwise --data.",
+    )
+    ap.add_argument(
+        "--emotion-profiles",
+        default="",
+        help="Optional emotion_profiles.csv path. If provided, emotion similarity is computed from it first.",
+    )
+    ap.add_argument("--baseline-vectors", default="", help="Baseline vectors (.npz or .csv)")
+    ap.add_argument(
+        "--baseline-song-ids",
+        default="",
+        help="Optional .npy file containing song_id order for baseline npz vectors",
+    )
+    ap.add_argument("--proposed-vectors", default="", help="Proposed vectors (.csv, .npz, .npy)")
+    ap.add_argument(
+        "--proposed-song-ids",
+        default="",
+        help="Optional .npy file containing song_id order for proposed npz/npy vectors",
+    )
     ap.add_argument(
         "--emotion-config",
         default="configs/emotion_context.yaml",
@@ -667,7 +833,7 @@ def parse_args() -> argparse.Namespace:
     r.add_argument("--proposed-lambda", type=float, default=0.7, help="Proposed MMR lambda")
 
     o = ap.add_argument_group("output")
-    o.add_argument("--save-dir", default=str(_default_save_dir()), help="Directory for CSV/JSON outputs")
+    o.add_argument("--save-dir", default="artifacts/demo", help="Directory for CSV/JSON outputs")
     o.add_argument("--output-prefix", default="", help="Optional output filename prefix")
     return ap.parse_args()
 
@@ -677,7 +843,17 @@ def main() -> None:
     args = parse_args()
 
     data_path = _resolve_path(args.data)
+    catalog_path = _resolve_path(args.catalog) if args.catalog else _default_catalog_path()
+    emotion_profiles_path = (
+        _resolve_path(args.emotion_profiles) if args.emotion_profiles else _default_emotion_profiles_path()
+    )
     emotion_cfg_path = _resolve_path(args.emotion_config)
+    baseline_song_ids_path = (
+        _resolve_path(args.baseline_song_ids) if args.baseline_song_ids else _default_baseline_song_ids_path()
+    )
+    proposed_song_ids_path = (
+        _resolve_path(args.proposed_song_ids) if args.proposed_song_ids else _default_proposed_song_ids_path()
+    )
     save_dir = _resolve_path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -686,28 +862,51 @@ def main() -> None:
 
     if baseline_path is None:
         raise FileNotFoundError(
-            "Could not find baseline vectors automatically. "
-            "Checked artifacts/vectors/baseline_vectors.csv and legacy run outputs. "
-            "Use --baseline-vectors explicitly or run: python -m lyrics_reco.cli.export_vectors"
+            "Could not find baseline vectors automatically. Use --baseline-vectors explicitly."
         )
     if proposed_path is None:
         raise FileNotFoundError(
-            "Could not find proposed vectors automatically. "
-            "Checked artifacts/vectors/proposed_vectors.csv and legacy run outputs. "
-            "Use --proposed-vectors explicitly or run: python -m lyrics_reco.cli.export_vectors"
+            "Could not find proposed vectors automatically. Use --proposed-vectors explicitly."
+        )
+    if catalog_path is None:
+        raise FileNotFoundError(
+            "Could not find metadata automatically. Use --catalog explicitly, or keep data/processed/genius_processed.csv available."
         )
 
-    if not data_path.exists():
-        raise FileNotFoundError(data_path)
+    if not catalog_path.exists():
+        raise FileNotFoundError(catalog_path)
     if not emotion_cfg_path.exists():
         raise FileNotFoundError(emotion_cfg_path)
+    if args.data and not data_path.exists():
+        raise FileNotFoundError(data_path)
 
-    meta_df = pd.read_csv(data_path)
-    if "song_id" not in meta_df.columns:
-        raise ValueError("Processed CSV must contain 'song_id'")
+    meta_df = _ensure_meta_cols(pd.read_csv(catalog_path))
+    baseline = load_baseline_vectors(
+        meta_df,
+        baseline_path,
+        baseline_song_ids_path=baseline_song_ids_path,
+    )
+    proposed = load_proposed_vectors(
+        meta_df,
+        proposed_path,
+        proposed_song_ids_path=proposed_song_ids_path,
+    )
 
-    baseline = load_baseline_vectors(meta_df, baseline_path)
-    proposed = load_proposed_vectors(meta_df, proposed_path)
+    emotion_profiles_df: Optional[pd.DataFrame] = None
+    if emotion_profiles_path is not None and emotion_profiles_path.exists():
+        emotion_profiles_df = _ensure_meta_cols(pd.read_csv(emotion_profiles_path))
+        emotion_profiles_df = meta_df[["song_id"]].merge(emotion_profiles_df, on="song_id", how="left")
+
+    data_df: Optional[pd.DataFrame] = None
+    if data_path.exists():
+        data_df = _ensure_meta_cols(pd.read_csv(data_path))
+        if len(data_df) == len(meta_df) and data_df["song_id"].astype(str).equals(meta_df["song_id"].astype(str)):
+            pass
+        else:
+            data_df = meta_df[["song_id"]].merge(data_df, on="song_id", how="left", suffixes=("", "_data"))
+            for c in ["title", "artist", "year", "genre"]:
+                if c not in data_df.columns and f"{c}_data" in data_df.columns:
+                    data_df[c] = data_df[f"{c}_data"]
 
     query_index = resolve_query_index(
         meta_df,
@@ -716,12 +915,15 @@ def main() -> None:
         artist=args.artist or None,
     )
 
+    emotion_source_df = data_df if data_df is not None else meta_df
+    proposed_dense = proposed.matrix.toarray() if sparse.issparse(proposed.matrix) else np.asarray(proposed.matrix, dtype=np.float32)
     emotion_matrix, emotion_cols, emotion_source = build_emotion_matrix(
-        meta_df,
+        emotion_source_df,
         baseline_aux_df=baseline.auxiliary_df,
-        proposed_matrix=np.asarray(proposed.matrix, dtype=np.float32),
+        proposed_matrix=proposed_dense,
         emotion_cfg_path=emotion_cfg_path,
         mode=args.emotion_space,
+        emotion_profiles_df=emotion_profiles_df,
     )
 
     baseline_out = run_one_model(
@@ -738,7 +940,7 @@ def main() -> None:
     )
     proposed_out = run_one_model(
         model_name="proposed",
-        X=np.asarray(proposed.matrix, dtype=np.float32),
+        X=proposed_dense,
         query_index=query_index,
         meta_df=meta_df,
         emotion_matrix=emotion_matrix,
@@ -772,9 +974,13 @@ def main() -> None:
             "genre": str(query_row.get("genre", "")),
         },
         "paths": {
+            "catalog": str(catalog_path),
             "data": str(data_path),
+            "emotion_profiles": str(emotion_profiles_path) if emotion_profiles_path else "",
             "baseline_vectors": str(baseline.source_path),
+            "baseline_song_ids": str(baseline_song_ids_path) if baseline_song_ids_path else "",
             "proposed_vectors": str(proposed.source_path),
+            "proposed_song_ids": str(proposed_song_ids_path) if proposed_song_ids_path else "",
             "emotion_config": str(emotion_cfg_path),
             "baseline_csv": str(baseline_csv),
             "proposed_csv": str(proposed_csv),
@@ -799,12 +1005,17 @@ def main() -> None:
     print("\n[Query]")
     preview_cols = [c for c in ["song_id", "title", "artist", "year", "genre"] if c in meta_df.columns]
     print(query_row[preview_cols].to_string())
-    print(f"\nBaseline vectors : {baseline.source_path}")
-    print(f"Proposed vectors : {proposed.source_path}")
-    print(f"Emotion source   : {emotion_source} -> {emotion_cols}")
-    print(f"Saved baseline   : {baseline_csv}")
-    print(f"Saved proposed   : {proposed_csv}")
-    print(f"Saved summary    : {summary_json}")
+    print(f"\nCatalog           : {catalog_path}")
+    print(f"Baseline vectors  : {baseline.source_path}")
+    if baseline_song_ids_path is not None and baseline_song_ids_path.exists():
+        print(f"Baseline song ids : {baseline_song_ids_path}")
+    print(f"Proposed vectors  : {proposed.source_path}")
+    if proposed_song_ids_path is not None and proposed_song_ids_path.exists():
+        print(f"Proposed song ids : {proposed_song_ids_path}")
+    print(f"Emotion source    : {emotion_source} -> {emotion_cols}")
+    print(f"Saved baseline    : {baseline_csv}")
+    print(f"Saved proposed    : {proposed_csv}")
+    print(f"Saved summary     : {summary_json}")
 
     _print_table("[BASELINE] Recommendations", baseline_out.table)
     _print_table("[PROPOSED] Recommendations", proposed_out.table)
