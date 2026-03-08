@@ -688,13 +688,13 @@ def main() -> None:
         raise FileNotFoundError(
             "Could not find baseline vectors automatically. "
             "Checked artifacts/vectors/baseline_vectors.csv and legacy run outputs. "
-            "Use --baseline-vectors explicitly or populate the central store first."
+            "Use --baseline-vectors explicitly or run: python -m lyrics_reco.cli.export_vectors"
         )
     if proposed_path is None:
         raise FileNotFoundError(
             "Could not find proposed vectors automatically. "
             "Checked artifacts/vectors/proposed_vectors.csv and legacy run outputs. "
-            "Use --proposed-vectors explicitly or populate the central store first."
+            "Use --proposed-vectors explicitly or run: python -m lyrics_reco.cli.export_vectors"
         )
 
     if not data_path.exists():

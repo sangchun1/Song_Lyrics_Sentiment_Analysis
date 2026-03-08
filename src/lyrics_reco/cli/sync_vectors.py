@@ -8,51 +8,40 @@ from lyrics_reco.common.vector_store import copy_vector_csv, latest_run_vector_p
 
 
 
-def _resolve(path_str: str) -> Path:
+def _resolve_optional(path_str: str) -> Path | None:
+    if not path_str:
+        return None
     p = Path(path_str)
     if p.is_absolute():
-        return p
+        return p.resolve()
     return (PATHS.root / p).resolve()
 
 
 
-def parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(
-        description="Copy existing run-local vector CSVs into artifacts/vectors/ for demo usage"
-    )
-    ap.add_argument("--baseline-src", default="", help="Optional baseline source CSV")
-    ap.add_argument("--proposed-src", default="", help="Optional proposed source CSV")
-    ap.add_argument(
-        "--model",
-        choices=["baseline", "proposed", "both"],
-        default="both",
-        help="Which vectors to sync",
-    )
-    return ap.parse_args()
-
-
-
 def _sync_one(kind: str, explicit_src: str) -> Path:
-    if explicit_src:
-        src = _resolve(explicit_src)
-    else:
+    src = _resolve_optional(explicit_src)
+    if src is None:
         src = latest_run_vector_path(kind, paths=PATHS)
-        if src is None:
-            raise FileNotFoundError(f"Could not find latest {kind} run vector CSV under artifacts/runs/")
+    if src is None:
+        raise FileNotFoundError(
+            f"Could not find latest {kind} vector CSV under artifacts/runs/. "
+            f"If you never saved vectors during the run, use: python -m lyrics_reco.cli.export_vectors"
+        )
     return copy_vector_csv(src, kind, paths=PATHS)
 
 
 
 def main() -> None:
-    args = parse_args()
+    ap = argparse.ArgumentParser(description="Copy latest run vector CSVs into artifacts/vectors/")
+    ap.add_argument("--baseline-src", default="", help="Optional explicit baseline vector CSV")
+    ap.add_argument("--proposed-src", default="", help="Optional explicit proposed vector CSV")
+    args = ap.parse_args()
 
-    if args.model in ("baseline", "both"):
-        out = _sync_one("baseline", args.baseline_src)
-        print(f"Synced baseline vectors -> {out}")
+    baseline_out = _sync_one("baseline", args.baseline_src)
+    proposed_out = _sync_one("proposed", args.proposed_src)
 
-    if args.model in ("proposed", "both"):
-        out = _sync_one("proposed", args.proposed_src)
-        print(f"Synced proposed vectors -> {out}")
+    print(f"Baseline -> {baseline_out}")
+    print(f"Proposed -> {proposed_out}")
 
 
 if __name__ == "__main__":

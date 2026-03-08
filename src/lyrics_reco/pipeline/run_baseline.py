@@ -4,9 +4,9 @@ lyrics_reco.pipeline.run_baseline
 Baseline retrieval + evaluation pipeline (lexicon ratio vectors).
 
 Main change in this version:
-- keeps the per-run CSV under artifacts/runs/<run_id>/ as before
-- additionally saves a central copy under artifacts/vectors/baseline_vectors.csv
-  so demo / quickstart code can load it without guessing a run directory
+- keeps the per-run vector CSV under artifacts/runs/<run_id>/ when requested
+- additionally maintains a central copy under artifacts/vectors/baseline_vectors.csv
+  so demo / quickstart code can load it directly
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from ..common.io import save_csv
 from ..common.logging import setup_run_logger
 from ..common.paths import PATHS
 from ..common.seed import set_seed
-from ..common.vector_store import save_central_vectors
+from ..common.vector_store import copy_vector_csv, save_central_vectors
 from ..evaluation.pseudo_gt import PseudoGTConfig
 from ..evaluation.runner import EvalConfig, evaluate_from_rec_table
 from ..lexicon.load import load_lexicons_from_cfg
@@ -71,7 +71,7 @@ def _build_vectors(
     )
     ratio_cols = sorted([c for c in feats.columns if c.startswith("ratio_")])
     if emotions is not None:
-        ratio_cols = [f"ratio_{e.lower()}" for e in emotions]
+        ratio_cols = [f"ratio_{str(e).lower()}" for e in emotions]
     X = feats[ratio_cols].astype(float).to_numpy()
     Xn = l2_normalize_rows(X)
     logger.info("Built baseline vectors: N=%d, D=%d", Xn.shape[0], Xn.shape[1])
@@ -87,19 +87,9 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--emotion-config", default="configs/emotion_context.yaml")
     ap.add_argument("--seed", type=int, default=42)
 
-    ap.add_argument(
-        "--save-vectors-csv",
-        dest="save_vectors_csv",
-        action="store_true",
-        default=True,
-        help="Save run-local baseline vector CSV under artifacts/runs/<run_id>/",
-    )
-    ap.add_argument(
-        "--no-save-vectors-csv",
-        dest="save_vectors_csv",
-        action="store_false",
-        help="Do not save run-local baseline vector CSV",
-    )
+    ap.add_argument("--save-vectors-csv", action="store_true", default=False)
+    ap.add_argument("--include-intensity", action="store_true", default=False)
+    ap.add_argument("--include-vad", action="store_true", default=False)
     ap.add_argument(
         "--save-central-vectors",
         dest="save_central_vectors",
@@ -111,7 +101,6 @@ def parse_args() -> argparse.Namespace:
         "--no-save-central-vectors",
         dest="save_central_vectors",
         action="store_false",
-        help="Do not save the central baseline vector CSV",
     )
     ap.add_argument(
         "--central-vectors-out",
@@ -119,8 +108,6 @@ def parse_args() -> argparse.Namespace:
         help="Optional override path for the central baseline vectors CSV",
     )
 
-    ap.add_argument("--include-intensity", action="store_true", default=False)
-    ap.add_argument("--include-vad", action="store_true", default=False)
     ap.add_argument("--n-queries", type=int, default=0)
     ap.add_argument("--top-m", type=int, default=0)
     ap.add_argument("--top-k", type=int, default=0)
@@ -157,21 +144,19 @@ def main() -> None:
         logger=logger,
     )
 
+    run_vec_path = None
     if args.save_vectors_csv:
-        run_vec_path = art_dir / "baseline_lexicon_features.csv"
-        save_csv(feats_df, run_vec_path, index=False)
-        logger.info("Saved run-local baseline vectors: %s", run_vec_path)
+        run_vec_path = save_csv(feats_df, art_dir / "baseline_lexicon_features.csv", index=False)
+        logger.info("Saved run baseline vectors: %s", run_vec_path)
 
     if args.save_central_vectors:
-        central_path = save_central_vectors(
-            feats_df,
-            "baseline",
-            out_path=args.central_vectors_out or None,
-            paths=PATHS,
-        )
+        central_out = args.central_vectors_out or None
+        if run_vec_path is not None:
+            central_path = copy_vector_csv(run_vec_path, "baseline", out_path=central_out, paths=PATHS)
+        else:
+            central_path = save_central_vectors(feats_df, "baseline", out_path=central_out, paths=PATHS)
         logger.info("Saved central baseline vectors: %s", central_path)
 
-    # query sampling
     eval_seed = int(cfg_get(cfg, ["eval", "seed"], args.seed))
     n_queries = int(cfg_get(cfg, ["eval", "n_queries"], 500))
     if args.n_queries and args.n_queries > 0:
@@ -187,7 +172,6 @@ def main() -> None:
         min_per_stratum=min_per_stratum,
     )
 
-    # retrieval settings
     top_m = int(cfg_get(cfg, ["retrieval", "top_m"], 200))
     top_k = int(cfg_get(cfg, ["retrieval", "top_k"], 20))
     if args.top_m and args.top_m > 0:
