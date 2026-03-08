@@ -25,11 +25,13 @@ Notes
 -----
 - Baseline path priority:
     1) --baseline-vectors
-    2) artifacts/vectorizers/baseline_vectors.npz
-    3) latest artifacts/runs/*/baseline_lexicon_features.csv
+    2) artifacts/vectors/baseline_vectors.csv
+    3) legacy artifacts/vectorizers/baseline_vectors.npz
+    4) latest artifacts/runs/*/baseline_lexicon_features.csv
 - Proposed path priority:
     1) --proposed-vectors
-    2) latest artifacts/runs/*/emotion_context_vectors.csv
+    2) artifacts/vectors/proposed_vectors.csv
+    3) latest artifacts/runs/*/emotion_context_vectors.csv
 - Emotion similarity priority:
     1) ratio_/VAD columns already present in the processed data CSV
     2) ratio_/VAD columns from baseline CSV (if used)
@@ -59,6 +61,8 @@ if __package__ in (None, ""):
 else:
     REPO_ROOT = Path(__file__).resolve().parents[3]
 
+from lyrics_reco.common.paths import PATHS  # noqa: E402
+from lyrics_reco.common.vector_store import default_vector_path  # noqa: E402
 from lyrics_reco.retrieval.cosine import topk_cosine  # noqa: E402
 from lyrics_reco.retrieval.mmr import mmr_rerank  # noqa: E402
 
@@ -86,6 +90,9 @@ def _latest_existing(patterns: Sequence[str]) -> Optional[Path]:
 
 
 def _default_baseline_path() -> Optional[Path]:
+    central_or_latest = default_vector_path("baseline", paths=PATHS)
+    if central_or_latest is not None:
+        return central_or_latest
     direct = _resolve_path("artifacts/vectorizers/baseline_vectors.npz")
     if direct.exists():
         return direct
@@ -93,13 +100,11 @@ def _default_baseline_path() -> Optional[Path]:
 
 
 def _default_proposed_path() -> Optional[Path]:
-    return _latest_existing(["artifacts/runs/*/emotion_context_vectors.csv"])
+    return default_vector_path("proposed", paths=PATHS)
 
 
 def _default_save_dir() -> Path:
-    out = _resolve_path("artifacts/demo")
-    out.mkdir(parents=True, exist_ok=True)
-    return out
+    return PATHS.demo_dir()
 
 
 # -----------------------------------------------------------------------------
@@ -624,7 +629,7 @@ def run_one_model(
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Compare baseline vs proposed recommendations")
     ap.add_argument("--data", default="data/processed/genius_processed.csv", help="Processed CSV path")
-    ap.add_argument("--baseline-vectors", default="", help="Baseline vectors (.npz or .csv)")
+    ap.add_argument("--baseline-vectors", default="", help="Baseline vectors CSV (preferred) or legacy .npz")
     ap.add_argument("--proposed-vectors", default="", help="Proposed vectors CSV")
     ap.add_argument(
         "--emotion-config",
@@ -662,7 +667,7 @@ def parse_args() -> argparse.Namespace:
     r.add_argument("--proposed-lambda", type=float, default=0.7, help="Proposed MMR lambda")
 
     o = ap.add_argument_group("output")
-    o.add_argument("--save-dir", default="artifacts/demo", help="Directory for CSV/JSON outputs")
+    o.add_argument("--save-dir", default=str(_default_save_dir()), help="Directory for CSV/JSON outputs")
     o.add_argument("--output-prefix", default="", help="Optional output filename prefix")
     return ap.parse_args()
 
@@ -681,11 +686,15 @@ def main() -> None:
 
     if baseline_path is None:
         raise FileNotFoundError(
-            "Could not find baseline vectors automatically. Use --baseline-vectors explicitly."
+            "Could not find baseline vectors automatically. "
+            "Checked artifacts/vectors/baseline_vectors.csv and legacy run outputs. "
+            "Use --baseline-vectors explicitly or populate the central store first."
         )
     if proposed_path is None:
         raise FileNotFoundError(
-            "Could not find proposed vectors automatically. Use --proposed-vectors explicitly."
+            "Could not find proposed vectors automatically. "
+            "Checked artifacts/vectors/proposed_vectors.csv and legacy run outputs. "
+            "Use --proposed-vectors explicitly or populate the central store first."
         )
 
     if not data_path.exists():

@@ -1,16 +1,15 @@
 """
 lyrics_reco.common.paths
 
-- Centralizes all project paths (data/assets/artifacts/reports/configs).
-- Uses pathlib.Path for OS-independent path handling.
-- No pickle assumptions: helpers are oriented around CSV/JSON outputs.
+Central project paths used across the repository.
 
-How root is resolved (priority):
-1) Environment variable: LYRICS_RECO_ROOT
-2) Auto-detect by walking up from this file until it finds one of:
-   - "pyproject.toml"
-   - ".git"
-   - "configs" directory
+Highlights
+----------
+- Resolves repo root robustly.
+- Creates directories lazily via helpers.
+- Keeps all tabular outputs CSV-first.
+- Adds a central vector store under ``artifacts/vectors`` so demo / quickstart
+  code does not need to guess a run directory.
 """
 
 from __future__ import annotations
@@ -18,22 +17,25 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 
-# -----------------------------
+# -----------------------------------------------------------------------------
 # Root resolution
-# -----------------------------
+# -----------------------------------------------------------------------------
+
+
 def _walk_up_find_root(start: Path) -> Path:
     cur = start.resolve()
-    for _ in range(20):  # safety: avoid infinite loops
+    for _ in range(20):
         if (cur / "pyproject.toml").exists() or (cur / ".git").exists() or (cur / "configs").is_dir():
             return cur
         if cur.parent == cur:
             break
         cur = cur.parent
-    # fallback: assume repo root is 3 levels up from this file (src/lyrics_reco/common/paths.py)
+    # fallback: src/lyrics_reco/common/paths.py -> repo root is 3 parents up
     return start.resolve().parents[3]
+
 
 
 def get_project_root() -> Path:
@@ -43,12 +45,15 @@ def get_project_root() -> Path:
     return _walk_up_find_root(Path(__file__).parent)
 
 
-# -----------------------------
-# Directory creation
-# -----------------------------
+# -----------------------------------------------------------------------------
+# Directory creation helpers
+# -----------------------------------------------------------------------------
+
+
 def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
+
 
 
 def ensure_parent_dir(file_path: Path) -> Path:
@@ -56,20 +61,22 @@ def ensure_parent_dir(file_path: Path) -> Path:
     return file_path
 
 
+
 def with_suffix_csv(path: Path) -> Path:
-    """Ensure the path ends with .csv (used for all tabular outputs)."""
     return path if path.suffix.lower() == ".csv" else path.with_suffix(".csv")
 
 
-# -----------------------------
+# -----------------------------------------------------------------------------
 # Structured path bundle
-# -----------------------------
+# -----------------------------------------------------------------------------
+
+
 @dataclass(frozen=True)
 class ProjectPaths:
-    # Root
+    # root
     root: Path
 
-    # Top-level directories
+    # top-level directories
     assets: Path
     configs: Path
     data: Path
@@ -92,37 +99,41 @@ class ProjectPaths:
     art_embeddings: Path
     art_indexes: Path
     art_runs: Path
+    art_vectors: Path
+    art_demo: Path
 
     # reports/*
     rep_runs: Path
     rep_tables: Path
 
     def make_run_dir(self, run_id: str) -> Path:
-        """Create and return artifacts/runs/<run_id>."""
         return ensure_dir(self.art_runs / run_id)
 
     def make_report_run_dir(self, run_id: str) -> Path:
-        """Create and return reports/runs/<run_id>."""
         return ensure_dir(self.rep_runs / run_id)
 
-    # Convenience helpers for common outputs (CSV-first)
     def metrics_csv(self, run_id: str, name: str = "metrics") -> Path:
-        """artifacts/runs/<run_id>/<name>.csv"""
         return with_suffix_csv(self.art_runs / run_id / name)
 
     def table_csv(self, name: str, subdir: Optional[str] = None) -> Path:
-        """
-        reports/tables/(subdir/)?<name>.csv
-        Example: table_csv("main_results") -> reports/tables/main_results.csv
-        """
         base = self.rep_tables if subdir is None else (self.rep_tables / subdir)
         return with_suffix_csv(base / name)
+
+    def baseline_vectors_csv(self) -> Path:
+        return self.art_vectors / "baseline_vectors.csv"
+
+    def proposed_vectors_csv(self) -> Path:
+        return self.art_vectors / "proposed_vectors.csv"
+
+    def demo_dir(self) -> Path:
+        return ensure_dir(self.art_demo)
+
 
 
 def build_paths(root: Optional[Path] = None, create: bool = False) -> ProjectPaths:
     r = (root or get_project_root()).resolve()
 
-    # Top-level
+    # top-level
     assets = r / "assets"
     configs = r / "configs"
     data = r / "data"
@@ -145,6 +156,8 @@ def build_paths(root: Optional[Path] = None, create: bool = False) -> ProjectPat
     art_embeddings = artifacts / "embeddings"
     art_indexes = artifacts / "indexes"
     art_runs = artifacts / "runs"
+    art_vectors = artifacts / "vectors"
+    art_demo = artifacts / "demo"
 
     # reports/*
     rep_runs = reports / "runs"
@@ -168,23 +181,37 @@ def build_paths(root: Optional[Path] = None, create: bool = False) -> ProjectPat
         art_embeddings=art_embeddings,
         art_indexes=art_indexes,
         art_runs=art_runs,
+        art_vectors=art_vectors,
+        art_demo=art_demo,
         rep_runs=rep_runs,
         rep_tables=rep_tables,
     )
 
     if create:
-        # Create core dirs (safe even if they already exist)
         for d in [
-            p.assets, p.configs, p.data, p.artifacts, p.reports,
-            p.assets_lid, p.assets_lexicons, p.assets_preprocess,
-            p.data_raw, p.data_interim, p.data_processed,
-            p.art_vectorizers, p.art_embeddings, p.art_indexes, p.art_runs,
-            p.rep_runs, p.rep_tables,
+            p.assets,
+            p.configs,
+            p.data,
+            p.artifacts,
+            p.reports,
+            p.assets_lid,
+            p.assets_lexicons,
+            p.assets_preprocess,
+            p.data_raw,
+            p.data_interim,
+            p.data_processed,
+            p.art_vectorizers,
+            p.art_embeddings,
+            p.art_indexes,
+            p.art_runs,
+            p.art_vectors,
+            p.art_demo,
+            p.rep_runs,
+            p.rep_tables,
         ]:
             ensure_dir(d)
 
     return p
 
 
-# Public singleton (no creation side effects)
 PATHS: ProjectPaths = build_paths(create=False)
