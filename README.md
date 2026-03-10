@@ -2,7 +2,7 @@
 
 A lyrics-based music recommendation project that compares:
 
-- **Baseline**: lexicon / feature-based song representation
+- **Baseline**: TF-IDF song representation with emotion-aware term weighting
 - **Proposed**: emotion-context vector representation
 
 The main entry point for quick use is **`demo.py`**.  
@@ -17,7 +17,7 @@ This project uses song lyrics to recommend emotionally similar songs.
 The demo:
 
 - takes a query song by `song_id` or `title` + `artist`
-- loads saved **baseline** vectors and **proposed** vectors
+- loads saved **baseline** TF-IDF vectors and **proposed** vectors
 - returns top-k recommendations from each model
 - shows:
   - model similarity score
@@ -31,6 +31,7 @@ The demo:
 ```bash
 git clone https://github.com/sangchun1/Song_Lyrics_Sentiment_Analysis.git
 cd Song_Lyrics_Sentiment_Analysis
+
 pip install -e .
 ```
 
@@ -70,7 +71,8 @@ python -m lyrics_reco.cli.demo \
   --title "Hello" \
   --artist "Adele" \
   --k 10 \
-  --baseline-vectors artifacts/runs/<baseline_run>/baseline_lexicon_features.csv \
+  --baseline-vectors artifacts/runs/<baseline_run>/baseline_tfidf_weighted.npz \
+  --baseline-song-ids artifacts/runs/<baseline_run>/baseline_tfidf_song_ids.npy \
   --proposed-vectors artifacts/runs/<proposed_run>/emotion_context_vectors.csv
 ```
 
@@ -88,8 +90,25 @@ The demo expects:
   * default priority:
 
     1. `--baseline-vectors`
-    2. `artifacts/vectorizers/baseline_vectors.npz`
-    3. latest `artifacts/runs/*/baseline_lexicon_features.csv`
+    2. `artifacts/vectors/baseline_tfidf_weighted.npz`
+    3. `artifacts/vectors/baseline_tfidf.npz`
+    4. `artifacts/vectors/baseline_vectors.npz`
+    5. `artifacts/vectorizers/baseline_tfidf_weighted.npz`
+    6. `artifacts/vectorizers/baseline_vectors.npz`
+    7. latest `artifacts/runs/*/baseline_tfidf_weighted.npz`
+    8. latest `artifacts/runs/*/baseline_tfidf.npz`
+    9. latest `artifacts/runs/*/baseline_vectors.npz`
+    10. latest `artifacts/runs/*/baseline_lexicon_features.csv`
+* baseline song id mapping for `.npz` baseline vectors
+
+  * optional but recommended when loading sparse TF-IDF vectors
+  * default priority:
+
+    1. `--baseline-song-ids`
+    2. `artifacts/vectors/baseline_song_ids.npy`
+    3. `artifacts/vectors/baseline_tfidf_song_ids.npy`
+    4. latest `artifacts/runs/*/baseline_song_ids.npy`
+    5. latest `artifacts/runs/*/baseline_tfidf_song_ids.npy`
 * proposed vectors
 
   * default priority:
@@ -137,6 +156,7 @@ Each recommendation table includes fields such as:
 --k                    Number of recommendations
 --top-m                Candidate pool size before reranking
 --emotion-space        auto | ratio | ratio_vad
+--baseline-song-ids    Optional song_id order for baseline `.npz` vectors
 --baseline-use-mmr     Apply MMR to baseline too
 --baseline-lambda      Baseline MMR lambda
 --proposed-disable-mmr Disable MMR for proposed model
@@ -162,6 +182,7 @@ python -m lyrics_reco.cli.demo \
   --title "Hello" \
   --artist "Adele" \
   --baseline-vectors <path_to_baseline_vectors> \
+  --baseline-song-ids <path_to_baseline_song_ids> \
   --proposed-vectors <path_to_proposed_vectors>
 ```
 
@@ -192,6 +213,7 @@ src/lyrics_reco/
 * The processed CSV should contain at least `song_id`.
 * For title-based search, `title` is required and `artist` helps disambiguate duplicates.
 * The demo compares **baseline vs proposed** on the same query song, so it is useful for quick qualitative checks and presentations.
+* For TF-IDF baseline vectors saved as `.npz`, keeping the matching `baseline_song_ids.npy` or `baseline_tfidf_song_ids.npy` file is recommended.
 
 ---
 

@@ -40,7 +40,7 @@ vad:
 line_weighting:
   alpha_emotion: 1.0
   beta_intensity: 1.0
-  gamma_arousal: 1.0
+  gamma_arousal: 0.0
   normalize: softmax         # none | l1 | softmax
   softmax_temperature: 1.0
 

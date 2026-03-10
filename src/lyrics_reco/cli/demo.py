@@ -100,14 +100,20 @@ def _first_existing(paths: Sequence[str]) -> Optional[Path]:
 def _default_baseline_path() -> Optional[Path]:
     direct = _first_existing(
         [
+            "artifacts/vectors/baseline_tfidf_weighted.npz",
+            "artifacts/vectors/baseline_tfidf.npz",
             "artifacts/vectors/baseline_vectors.npz",
             "artifacts/vectors/baseline_vectors.csv",
+            "artifacts/vectorizers/baseline_tfidf_weighted.npz",
             "artifacts/vectorizers/baseline_vectors.npz",
         ]
     )
     if direct is not None:
         return direct
     return _latest_existing([
+        "artifacts/runs/*/baseline_tfidf_weighted.npz",
+        "artifacts/runs/*/baseline_tfidf.npz",
+        "artifacts/runs/*/baseline_vectors.npz",
         "artifacts/runs/*/baseline_lexicon_features.csv",
         "artifacts/runs/*/baseline_vectors.csv",
     ])
@@ -115,7 +121,18 @@ def _default_baseline_path() -> Optional[Path]:
 
 
 def _default_baseline_song_ids_path() -> Optional[Path]:
-    return _first_existing(["artifacts/vectors/baseline_song_ids.npy"])
+    direct = _first_existing(
+        [
+            "artifacts/vectors/baseline_song_ids.npy",
+            "artifacts/vectors/baseline_tfidf_song_ids.npy",
+        ]
+    )
+    if direct is not None:
+        return direct
+    return _latest_existing([
+        "artifacts/runs/*/baseline_song_ids.npy",
+        "artifacts/runs/*/baseline_tfidf_song_ids.npy",
+    ])
 
 
 
@@ -331,14 +348,14 @@ META_TEXT_COLS = {
 
 
 def _infer_baseline_csv_vector_cols(df: pd.DataFrame) -> list[str]:
-    ratio_cols = sorted([c for c in df.columns if c.startswith("ratio_")])
-    if ratio_cols:
-        return ratio_cols
-
     preferred_prefixes = ("x_", "vec_", "vector_", "feat_")
     pref = [c for c in df.columns if c.startswith(preferred_prefixes)]
     if pref:
         return sorted(pref)
+
+    ratio_cols = sorted([c for c in df.columns if c.startswith("ratio_")])
+    if ratio_cols:
+        return ratio_cols
 
     numeric_cols = [
         c
@@ -785,7 +802,7 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional emotion_profiles.csv path. If provided, emotion similarity is computed from it first.",
     )
-    ap.add_argument("--baseline-vectors", default="", help="Baseline vectors (.npz or .csv)")
+    ap.add_argument("--baseline-vectors", default="", help="Baseline vectors (.npz preferred for TF-IDF baseline, or .csv)")
     ap.add_argument(
         "--baseline-song-ids",
         default="",

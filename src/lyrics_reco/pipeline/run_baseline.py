@@ -18,8 +18,16 @@ from typing import Any, Dict
 
 import numpy as np
 import pandas as pd
+from scipy import sparse
+from sklearn.preprocessing import normalize as sk_normalize
 
 from ..baseline.emotion_features import build_lexicon_feature_table
+from ..baseline.tfidf import (
+    build_tfidf,
+    compute_term_weights_from_intensity,
+    apply_term_weights,
+    save_vocab_idf_csv,
+)
 from ..common.config import dump_run_config, load_yaml
 from ..common.io import save_csv
 from ..common.logging import setup_run_logger
@@ -83,6 +91,133 @@ def _build_vectors(
     logger.info("Built baseline vectors: N=%d, D=%d", Xn.shape[0], Xn.shape[1])
     return feats, Xn
 
+def _l2_normalize_sparse(X: sparse.csr_matrix) -> sparse.csr_matrix:
+    return sk_normalize(X, norm="l2", axis=1, copy=True)
+
+def _topk_cosine_sparse(
+    Xn: sparse.csr_matrix,
+    query_index: int,
+    top_k: int,
+    *,
+    exclude_self: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    q = Xn.getrow(int(query_index))                     # (1, D)
+    scores = (Xn @ q.T).toarray().ravel().astype(np.float32)  # (N,)
+
+    if exclude_self:
+        scores[int(query_index)] = -np.inf
+
+    k = min(int(top_k), scores.shape[0])
+    if k <= 0:
+        return np.array([], dtype=int), np.array([], dtype=np.float32)
+
+    idx = np.argpartition(-scores, kth=k - 1)[:k]
+    idx = idx[np.argsort(-scores[idx])]
+
+    return idx.astype(int), scores[idx].astype(np.float32)
+
+def _extract_intensity_lookup(bundle) -> dict:
+    """
+    load_lexicons_from_cfg(...) 반환 객체에서 intensity lookup을 안전하게 꺼내기 위한 helper.
+    반환 객체 구조가 바뀌어도 여기만 보면 되게 두는 것이 좋습니다.
+    """
+    candidate_names = [
+        "intensity_lookup",
+        "intensity",
+        "nrc_intensity",
+        "intensity_scores",
+    ]
+
+    for name in candidate_names:
+        obj = getattr(bundle, name, None)
+        if obj is not None:
+            return obj
+
+    if isinstance(bundle, dict):
+        for name in candidate_names:
+            if name in bundle and bundle[name] is not None:
+                return bundle[name]
+
+    raise AttributeError(
+        "Could not find intensity lookup in lexicon bundle. "
+        "Please inspect load_lexicons_from_cfg(...) return object once."
+    )
+
+
+def _build_tfidf_baseline(
+    meta_df: pd.DataFrame,
+    emotion_cfg: Dict[str, Any],
+    logger,
+):
+    """
+    Research-plan baseline:
+    full TF-IDF on lyrics_dedup
+    + lexicon-based term weighting from NRC intensity
+    """
+    text_col = "lyrics_dedup" if "lyrics_dedup" in meta_df.columns else "lyrics_clean"
+
+    tfidf_art = build_tfidf(
+        meta_df,
+        text_col=text_col,
+        max_features=200_000,
+        ngram_range=(1, 2),
+        min_df=3,
+        max_df=0.95,
+    )
+
+    bundle = load_lexicons_from_cfg(emotion_cfg)
+    intensity_lookup = _extract_intensity_lookup(bundle)
+
+    term_weights = compute_term_weights_from_intensity(
+        tfidf_art.vocab,
+        intensity_lookup,
+        default=1.0,
+        mode="1+max",
+    )
+
+    X_weighted = apply_term_weights(tfidf_art.X, term_weights).tocsr()
+    Xn = _l2_normalize_sparse(X_weighted)
+
+    logger.info(
+        "Built TF-IDF baseline: N=%d, D=%d, nnz=%d",
+        Xn.shape[0],
+        Xn.shape[1],
+        Xn.nnz,
+    )
+
+    return tfidf_art, term_weights, Xn
+
+def _build_eval_emotion_vectors(
+    meta_df: pd.DataFrame,
+    emotion_cfg: Dict[str, Any],
+) -> np.ndarray:
+    """
+    EC@K 계산용 9D emotion feature matrix:
+    [ratio_6 + vad_3]
+    """
+    bundle = load_lexicons_from_cfg(emotion_cfg)
+    emotions = cfg_get(emotion_cfg, ["emotion", "emotions"], None)
+
+    feats = build_lexicon_feature_table(
+        meta_df,
+        bundle,
+        song_id_col="song_id",
+        text_col="lyrics_clean",
+        emotions=emotions,
+        include_intensity=True,
+        include_vad=True,
+        intensity_aggregation=cfg_get(emotion_cfg, ["intensity", "aggregation"], "mean"),
+        vad_aggregation=cfg_get(emotion_cfg, ["vad", "aggregation"], "mean"),
+    )
+
+    ratio_cols = [f"ratio_{str(e).lower()}" for e in emotions]
+    vad_cols = [c for c in ["valence", "arousal", "dominance"] if c in feats.columns]
+    emotion_cols = ratio_cols + vad_cols
+
+    E = feats[emotion_cols].astype(np.float32).to_numpy()
+    E = sk_normalize(E, norm="l2", axis=1, copy=True)
+
+    return E
 
 
 def parse_args() -> argparse.Namespace:
@@ -151,47 +286,33 @@ def main() -> None:
 
     meta_df = pd.read_csv(data_path)
     logger.info("Loaded processed data: rows=%d cols=%d", len(meta_df), meta_df.shape[1])
-    logger.info("Building baseline vectors (lexicon ratio)...")
+    logger.info("Building baseline vectors (TF-IDF + emotion term weights)...")
+    tfidf_art, term_weights, X = _build_tfidf_baseline(meta_df, cfg, logger)
+    E_eval = _build_eval_emotion_vectors(meta_df, cfg)
 
-    feats_df, X = _build_vectors(
-        meta_df,
-        cfg,
-        include_intensity=args.include_intensity,
-        include_vad=args.include_vad,
-        logger=logger,
+    # sparse TF-IDF matrix 저장
+    sparse.save_npz(art_dir / "baseline_tfidf_weighted.npz", X)
+
+    # song_id 매핑 저장
+    save_song_ids(
+        meta_df["song_id"].astype(str).to_numpy(),
+        "baseline_tfidf",
+        out_path=None,
+        paths=PATHS,
     )
 
-    run_vec_path = None
-    if args.save_vectors_csv:
-        run_vec_path = save_csv(feats_df, art_dir / "baseline_lexicon_features.csv", index=False)
-        logger.info("Saved run baseline vectors CSV: %s", run_vec_path)
+    # vocab + idf 저장
+    save_vocab_idf_csv(
+        tfidf_art.vocab,
+        tfidf_art.idf,
+        art_dir / "baseline_tfidf_vocab_idf.csv",
+    )
 
-    if args.save_central_vectors:
-        if args.central_format in {"csv", "both"}:
-            central_out_csv = args.central_vectors_out if args.central_vectors_out.lower().endswith(".csv") else None
-            if run_vec_path is not None and central_out_csv is not None:
-                central_csv_path = copy_vector_csv(run_vec_path, "baseline", out_path=central_out_csv, paths=PATHS)
-            else:
-                central_csv_path = save_central_vectors(
-                    feats_df,
-                    "baseline",
-                    out_path=central_out_csv,
-                    paths=PATHS,
-                )
-            logger.info("Saved central baseline vectors CSV: %s", central_csv_path)
-
-        if args.central_format in {"npz", "both"}:
-            central_npz_out = args.central_vectors_out if args.central_vectors_out.lower().endswith(".npz") else None
-            central_npz_path = save_dense_vectors_npz(X, "baseline", out_path=central_npz_out, paths=PATHS)
-            logger.info("Saved central baseline vectors NPZ: %s", central_npz_path)
-
-        song_ids_path = save_song_ids(
-            feats_df["song_id"].astype(str).to_numpy(),
-            "baseline",
-            out_path=args.central_song_ids_out or None,
-            paths=PATHS,
-        )
-        logger.info("Saved central baseline song ids: %s", song_ids_path)
+    # term weights 저장
+    term_rows = [{"term": t, "index": int(i), "term_weight": float(term_weights[i])}
+                for t, i in tfidf_art.vocab.items()]
+    term_df = pd.DataFrame(term_rows).sort_values("index").reset_index(drop=True)
+    save_csv(term_df, art_dir / "baseline_term_weights.csv", index=False)
 
     eval_seed = int(cfg_get(cfg, ["eval", "seed"], args.seed))
     n_queries = int(cfg_get(cfg, ["eval", "n_queries"], 500))
@@ -238,7 +359,12 @@ def main() -> None:
         if t_i == 1 or (t_i % 25) == 0:
             logger.info("Retrieval progress: %d/%d queries", t_i, len(q_idx))
 
-        cand_idx, cand_sc = topk_cosine(X, int(qi), top_k=top_m, exclude_self=False, normalize=False)
+        cand_idx, cand_sc = _topk_cosine_sparse(
+            X,
+            int(qi),
+            top_k=top_m,
+            exclude_self=False,
+        )
         cand_idx, cand_sc = filter_candidates(
             meta_df,
             query_index=int(qi),
@@ -291,8 +417,8 @@ def main() -> None:
         rec_df,
         eval_cfg=eval_cfg,
         pseudo_cfg=pseudo_cfg,
-        emotion_vectors=X,
-        item_vectors=X,
+        emotion_vectors=E_eval,  
+        item_vectors=X,          
         save_dir=art_dir,
     )
     logger.info("Done. Artifacts in %s", art_dir)
