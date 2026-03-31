@@ -60,8 +60,9 @@ if __package__ in (None, ""):
 else:
     REPO_ROOT = Path(__file__).resolve().parents[3]
 
-from lyrics_reco.retrieval.cosine import topk_cosine  # noqa: E402
-from lyrics_reco.retrieval.mmr import mmr_rerank  # noqa: E402
+from lyrics_reco.retrieval.cosine import topk_cosine
+from lyrics_reco.retrieval.dedup import filter_query_equivalent_candidates
+from lyrics_reco.retrieval.mmr import mmr_rerank
 
 
 ArrayLike = np.ndarray | sparse.spmatrix
@@ -671,6 +672,8 @@ class ModelOutput:
 
 
 def _recommend_indices(
+    meta_df: pd.DataFrame,
+    dedup_df: pd.DataFrame,
     X: ArrayLike,
     query_index: int,
     *,
@@ -680,13 +683,31 @@ def _recommend_indices(
     mmr_lambda: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     candidate_count = max(int(k), int(top_m))
+
+    # dedup 이후에도 후보가 충분히 남도록 넉넉하게 먼저 뽑습니다.
+    n_rows = int(X.shape[0])
+    retrieval_count = min(
+        n_rows - 1 if n_rows > 1 else 1,
+        max(candidate_count * 5, candidate_count + 50),
+    )
+
     cand_idx, cand_sc = topk_cosine(
         X,
         int(query_index),
-        top_k=candidate_count,
+        top_k=retrieval_count,
         exclude_self=True,
         normalize=True,
     )
+    if cand_idx.size == 0:
+        return cand_idx, cand_sc
+    
+    cand_idx, cand_sc = filter_query_equivalent_candidates(
+        meta_df=dedup_df,
+        query_index=int(query_index),
+        cand_indices=cand_idx,
+        cand_scores=cand_sc,
+    )
+
     if cand_idx.size == 0:
         return cand_idx, cand_sc
 
@@ -753,6 +774,7 @@ def run_one_model(
     X: ArrayLike,
     query_index: int,
     meta_df: pd.DataFrame,
+    dedup_df: pd.DataFrame,
     emotion_matrix: np.ndarray,
     source_path: Path,
     k: int,
@@ -761,6 +783,8 @@ def run_one_model(
     mmr_lambda: float,
 ) -> ModelOutput:
     idx, sc = _recommend_indices(
+        meta_df,
+        dedup_df,
         X,
         query_index,
         k=k,
@@ -933,6 +957,7 @@ def main() -> None:
     )
 
     emotion_source_df = data_df if data_df is not None else meta_df
+    dedup_df = data_df if data_df is not None else meta_df
     proposed_dense = proposed.matrix.toarray() if sparse.issparse(proposed.matrix) else np.asarray(proposed.matrix, dtype=np.float32)
     emotion_matrix, emotion_cols, emotion_source = build_emotion_matrix(
         emotion_source_df,
@@ -948,6 +973,7 @@ def main() -> None:
         X=baseline.matrix,
         query_index=query_index,
         meta_df=meta_df,
+        dedup_df=dedup_df,
         emotion_matrix=emotion_matrix,
         source_path=baseline.source_path,
         k=args.k,
@@ -960,6 +986,7 @@ def main() -> None:
         X=proposed_dense,
         query_index=query_index,
         meta_df=meta_df,
+        dedup_df=dedup_df,
         emotion_matrix=emotion_matrix,
         source_path=proposed.source_path,
         k=args.k,

@@ -1,0 +1,45 @@
+{
+  "query": {
+    "query_index": 53,
+    "song_id": "5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b",
+    "title": "Hello",
+    "artist": "Adele",
+    "year": 2015.0,
+    "genre": "pop"
+  },
+  "paths": {
+    "catalog": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\artifacts\\vectors\\catalog.csv",
+    "data": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\data\\processed\\genius_processed.csv",
+    "emotion_profiles": "",
+    "baseline_vectors": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\artifacts\\vectors\\baseline_vectors.npz",
+    "baseline_song_ids": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\artifacts\\vectors\\baseline_song_ids.npy",
+    "proposed_vectors": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\artifacts\\vectors\\proposed_vectors.npz",
+    "proposed_song_ids": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\artifacts\\vectors\\proposed_song_ids.npy",
+    "emotion_config": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\configs\\emotion_context.yaml",
+    "baseline_csv": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\artifacts\\demo\\Hello_-_Adele_20260310_153307_baseline_top10.csv",
+    "proposed_csv": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\artifacts\\demo\\Hello_-_Adele_20260310_153307_proposed_top10.csv"
+  },
+  "emotion_similarity": {
+    "source": "proposed_tail",
+    "columns": [
+      "ratio_anger",
+      "ratio_fear",
+      "ratio_joy",
+      "ratio_sadness",
+      "ratio_disgust",
+      "ratio_trust",
+      "valence",
+      "arousal",
+      "dominance"
+    ],
+    "mode": "auto"
+  },
+  "retrieval": {
+    "k": 10,
+    "top_m": 200,
+    "baseline_use_mmr": false,
+    "baseline_lambda": 0.7,
+    "proposed_use_mmr": true,
+    "proposed_lambda": 0.7
+  }
+}
