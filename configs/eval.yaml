@@ -1,21 +1,17 @@
 # configs/eval.yaml (recommended defaults)
 # Dev-friendly defaults for fast iteration on 500k-scale data.
-# - If you want "final" reporting runs, bump:
-#   n_queries: 500~800 (or more), and keep k_values [5,10,20].
+# - If you want final reporting runs, bump n_queries to 500~800 or more.
 
 eval:
   seed: 42
-  n_queries: 300                 # dev: 200~300, final: 500~800
+  n_queries: 300
   k_values: [5, 10, 20]
 
   query_sampling:
-    # Stratify only by columns that are guaranteed to exist in processed CSV.
-    # If you later add 'decade' column, you can change to [genre, decade].
     stratify_by: [genre]
     min_per_stratum: 10
 
 pseudo_ground_truth:
-  # Proxy relevance set R(q): same genre AND within +/- year_window.
   year_window: 10
   require_same_genre: true
   exclude_same_song: true
@@ -24,8 +20,6 @@ pseudo_ground_truth:
   graded_relevance:
     enabled: true
     grade_if_same_genre_and_within_year: 2
-    # IMPORTANT: keep this 0 by default to avoid huge grade maps for popular genres.
-    # If you set this to 1, also set max_grade1_per_query (e.g., 5000).
     grade_if_same_genre_only: 0
     max_grade1_per_query: 0
 
@@ -38,7 +32,7 @@ metrics:
 
   emotion_consistency:
     enabled: true
-    representation: emotion_ratio
+    representation: emotion_ratio_vad
     similarity: cosine
     threshold: null
 

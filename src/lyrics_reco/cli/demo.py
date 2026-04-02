@@ -101,9 +101,9 @@ def _first_existing(paths: Sequence[str]) -> Optional[Path]:
 def _default_baseline_path() -> Optional[Path]:
     direct = _first_existing(
         [
+            "artifacts/vectors/baseline_vectors.npz",
             "artifacts/vectors/baseline_tfidf_weighted.npz",
             "artifacts/vectors/baseline_tfidf.npz",
-            "artifacts/vectors/baseline_vectors.npz",
             "artifacts/vectors/baseline_vectors.csv",
             "artifacts/vectorizers/baseline_tfidf_weighted.npz",
             "artifacts/vectorizers/baseline_vectors.npz",
@@ -140,9 +140,9 @@ def _default_baseline_song_ids_path() -> Optional[Path]:
 def _default_proposed_path() -> Optional[Path]:
     direct = _first_existing(
         [
+            "artifacts/vectors/proposed_vectors.csv",
             "artifacts/vectors/proposed_vectors.npz",
             "artifacts/vectors/proposed_vectors.npy",
-            "artifacts/vectors/proposed_vectors.csv",
         ]
     )
     if direct is not None:
@@ -568,6 +568,8 @@ def _emotion_cols_from_df(df: pd.DataFrame, *, mode: str) -> list[str]:
 
 
 
+
+
 def _emotion_matrix_from_proposed_tail(
     X: np.ndarray,
     emotion_cfg: dict[str, Any],
@@ -579,42 +581,37 @@ def _emotion_matrix_from_proposed_tail(
     if not emotions:
         raise ValueError("emotion_context.yaml must contain emotion.emotions")
 
-    intensity_enabled = bool((emotion_cfg.get("intensity", {}) or {}).get("enabled", True))
-    vad_enabled = bool((emotion_cfg.get("vad", {}) or {}).get("enabled", True))
-
+    vector_layout = str(((emotion_cfg.get("aggregation", {}) or {}).get("vector_layout", "embedding_ratio_vad"))).strip()
     emo_dim = len(emotions)
-    tail = emo_dim + (emo_dim if intensity_enabled else 0) + (3 if vad_enabled else 0)
-    if X.shape[1] < tail:
-        raise ValueError(
-            f"Proposed vector dim={X.shape[1]} is smaller than expected tail dim={tail}"
-        )
 
-    emb_dim = X.shape[1] - tail
-    ratio = X[:, emb_dim : emb_dim + emo_dim]
-    pos = emb_dim + emo_dim
-    if intensity_enabled:
-        pos += emo_dim
-    vad = X[:, pos : pos + 3] if vad_enabled else np.zeros((len(X), 0), dtype=np.float32)
+    if vector_layout == "embedding_ratio_vad":
+        tail = emo_dim + 3
+        if X.shape[1] < tail:
+            raise ValueError(f"Proposed vector dim={X.shape[1]} is smaller than expected tail dim={tail}")
+        emb_dim = X.shape[1] - tail
+        ratio = X[:, emb_dim : emb_dim + emo_dim]
+        vad = X[:, emb_dim + emo_dim : emb_dim + emo_dim + 3]
+    elif vector_layout == "embedding_ratio_intensity_vad":
+        tail = emo_dim + emo_dim + 3
+        if X.shape[1] < tail:
+            raise ValueError(f"Proposed vector dim={X.shape[1]} is smaller than expected tail dim={tail}")
+        emb_dim = X.shape[1] - tail
+        ratio = X[:, emb_dim : emb_dim + emo_dim]
+        pos = emb_dim + emo_dim + emo_dim
+        vad = X[:, pos : pos + 3]
+    else:
+        raise ValueError(f"Unknown vector layout: {vector_layout}")
 
     cols = [f"ratio_{e}" for e in emotions]
-    parts = [ratio]
+    ratio = ratio.astype(np.float32, copy=False)
+    vad = vad.astype(np.float32, copy=False)
 
     if mode == "ratio":
-        return ratio.astype(np.float32, copy=False), cols
-
+        return ratio, cols
     if mode == "ratio_vad":
-        if vad.shape[1] == 0:
-            return ratio.astype(np.float32, copy=False), cols
-        parts.append(vad)
-        cols = cols + ["valence", "arousal", "dominance"]
-        return np.concatenate(parts, axis=1).astype(np.float32, copy=False), cols
-
+        return np.concatenate([ratio, vad], axis=1).astype(np.float32, copy=False), cols + ["valence", "arousal", "dominance"]
     if mode == "auto":
-        if vad.shape[1] == 3:
-            parts.append(vad)
-            cols = cols + ["valence", "arousal", "dominance"]
-        return np.concatenate(parts, axis=1).astype(np.float32, copy=False), cols
-
+        return np.concatenate([ratio, vad], axis=1).astype(np.float32, copy=False), cols + ["valence", "arousal", "dominance"]
     raise ValueError(f"Unknown emotion-space mode: {mode}")
 
 
@@ -855,7 +852,7 @@ def parse_args() -> argparse.Namespace:
     r.add_argument(
         "--emotion-space",
         choices=["auto", "ratio", "ratio_vad"],
-        default="auto",
+        default="ratio_vad",
         help="Emotion similarity space",
     )
     r.add_argument(

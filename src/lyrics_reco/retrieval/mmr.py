@@ -40,9 +40,12 @@ def _cosine(u: ArrayLike, v: ArrayLike, *, eps: float = 1e-12) -> float:
             u = sparse.csr_matrix(u)
         if not sparse.issparse(v):
             v = sparse.csr_matrix(v)
-        num = float(u @ v.T)
+
+        # scalar dot product for sparse 1xD rows
+        num = float(u.multiply(v).sum())
         den = max(_row_norm(u) * _row_norm(v), eps)
         return num / den
+
     num = float(np.dot(u, v))
     den = max(float(np.linalg.norm(u)) * float(np.linalg.norm(v)), eps)
     return num / den

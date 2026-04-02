@@ -1,0 +1,11 @@
+﻿model,query_song_id,query_title,query_artist,rec_song_id,title,artist,year,genre,rank,model_score,emotion_similarity,emotion_similarity_pct,year_gap
+proposed,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,fd6e4f19667ef4f2fd12bc5a06aa8c33981da24c,Hello Remix,Rick Ross,2015,rap,1,0.9554303288459778,0.0,0.0,0
+proposed,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,08187888ad0a5f7e412365c2e69f04c0d695ea08,Hello Remix,JG Trigga,2015,pop,2,0.9507495164871216,0.0,0.0,0
+proposed,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,37202c0b47a13eae2703cb3dbb0d61573a4345da,Hello,Bars and Melody,2016,pop,3,0.9410477876663208,0.0,0.0,1
+proposed,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,d3020bfcefe48c8654ece6ebcf6c048dce2bc6b6,Hello,Conor Maynard,2015,pop,4,0.9273816347122192,0.0,0.0,0
+proposed,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,7f648ad6501f9d95eff9f002913a918b1f0e3898,Hello,Stephen,2015,rock,5,0.9068089127540588,0.0,0.0,0
+proposed,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,342819e9d4557be5d85790d17be23ba65f2e9a5d,Hello,YONAS,2015,rap,6,0.8847036957740784,0.0,0.0,0
+proposed,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,e542f0cb5b8e0a099c26b35c6c6184cfc718b710,Say Hello Wave Goodbye,Soft Cell,1981,pop,7,0.8641992211341858,0.0,0.0,34
+proposed,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,4fe57736d144bf7a7eaee8f92a5b29fb9659b9c4,Hello,Omar Esa,2015,misc,8,0.8684999942779541,0.0,0.0,0
+proposed,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,d4e45bd26db3dbff6eeb00bef03d3602b63d4f14,Hello Remix,Shaun Sloan,2016,rap,9,0.8859114050865173,0.0,0.0,1
+proposed,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,07776aed7c452707cd691c972c124692037bf76e,Salut,Joe Dassin,1975,pop,10,0.8412953615188599,0.0,0.0,40

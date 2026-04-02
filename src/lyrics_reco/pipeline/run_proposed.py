@@ -4,17 +4,19 @@ lyrics_reco.pipeline.run_proposed
 End-to-end proposed pipeline:
 processed.csv -> emotion_context z(s) -> vectordb upsert -> retrieval -> evaluation
 
-Main change in this version:
+Storage behavior in this version:
 - keeps the per-run vector CSV under artifacts/runs/<run_id>/ as before
-- additionally maintains a central copy under artifacts/vectors/proposed_vectors.csv
-  so demo / quickstart code can load it directly
+- refreshes canonical central artifacts under artifacts/vectors/
+  * proposed_vectors.csv
+  * proposed_vectors.npz
+  * proposed_song_ids.npy
 """
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -24,7 +26,7 @@ from ..common.io import save_csv
 from ..common.logging import setup_run_logger
 from ..common.paths import PATHS
 from ..common.seed import set_seed
-from ..common.vector_store import copy_vector_csv, save_central_vectors
+from ..common.vector_store import save_central_vectors, save_dense_vectors_npz, save_song_ids
 from ..emotion_context.builder import build_song_vectors_from_df
 from ..evaluation.pseudo_gt import PseudoGTConfig
 from ..evaluation.runner import EvalConfig, evaluate_from_rec_table
@@ -35,11 +37,9 @@ from ..retrieval.results import build_recommendations_table
 from ..vectordb.factory import open_vectordb_from_cfg
 
 
-
 def _safe_dataclass_init(cls, **kwargs):
     fields = getattr(cls, "__dataclass_fields__", {}) or {}
     return cls(**{k: v for k, v in kwargs.items() if k in fields})
-
 
 
 def _load_configs(*paths: str) -> Dict[str, Any]:
@@ -49,7 +49,6 @@ def _load_configs(*paths: str) -> Dict[str, Any]:
             continue
         cfg.update(load_yaml(p))
     return cfg
-
 
 
 def _vector_cols(df: pd.DataFrame, prefix: str = "z_") -> List[str]:
@@ -66,7 +65,6 @@ def _vector_cols(df: pd.DataFrame, prefix: str = "z_") -> List[str]:
     return sorted(cols, key=_key)
 
 
-
 def _dist_to_score(dist: float, metric: str) -> float:
     m = metric.lower()
     if m == "cosine":
@@ -74,7 +72,6 @@ def _dist_to_score(dist: float, metric: str) -> float:
     if m in ("l2", "euclidean"):
         return float(-dist)
     return float(dist)
-
 
 
 def _to_python_scalar(v: Any) -> Any:
@@ -87,36 +84,43 @@ def _to_python_scalar(v: Any) -> Any:
     return str(v)
 
 
-
 def _split_z_components(
     Z: np.ndarray,
     *,
     emotions: Sequence[str],
-    intensity_enabled: bool,
-    vad_enabled: bool,
+    vector_layout: str,
 ) -> Dict[str, np.ndarray]:
-    """
-    Z layout (per emotion_context.concat_song_vector):
-    [embedding | emotion_ratio | intensity? | vad?]
-    """
     emo_dim = len(list(emotions))
-    tail = emo_dim + (emo_dim if intensity_enabled else 0) + (3 if vad_enabled else 0)
-    d = Z.shape[1]
-    if d < tail:
-        raise ValueError(f"Vector dim too small: D={d}, expected at least tail={tail}")
+    if vector_layout == "embedding_ratio_vad":
+        tail = emo_dim + 3
+        d = Z.shape[1]
+        if d < tail:
+            raise ValueError(f"Vector dim too small: D={d}, expected at least tail={tail}")
+        emb_dim = d - tail
+        return {
+            "embedding": Z[:, :emb_dim].astype(np.float32, copy=False),
+            "emotion_ratio": Z[:, emb_dim : emb_dim + emo_dim].astype(np.float32, copy=False),
+            "vad": Z[:, emb_dim + emo_dim : emb_dim + emo_dim + 3].astype(np.float32, copy=False),
+        }
 
-    emb_dim = d - tail
-    out: Dict[str, np.ndarray] = {}
-    out["embedding"] = Z[:, :emb_dim].astype(np.float32, copy=False)
-    out["emotion_ratio"] = Z[:, emb_dim : emb_dim + emo_dim].astype(np.float32, copy=False)
-    pos = emb_dim + emo_dim
-    if intensity_enabled:
+    if vector_layout == "embedding_ratio_intensity_vad":
+        tail = emo_dim + emo_dim + 3
+        d = Z.shape[1]
+        if d < tail:
+            raise ValueError(f"Vector dim too small: D={d}, expected at least tail={tail}")
+        emb_dim = d - tail
+        pos = emb_dim
+        out: Dict[str, np.ndarray] = {
+            "embedding": Z[:, :emb_dim].astype(np.float32, copy=False),
+            "emotion_ratio": Z[:, pos : pos + emo_dim].astype(np.float32, copy=False),
+        }
+        pos += emo_dim
         out["intensity"] = Z[:, pos : pos + emo_dim].astype(np.float32, copy=False)
         pos += emo_dim
-    if vad_enabled:
         out["vad"] = Z[:, pos : pos + 3].astype(np.float32, copy=False)
-    return out
+        return out
 
+    raise ValueError(f"Unknown vector layout: {vector_layout}")
 
 
 def _upsert_vectors_batched(
@@ -163,7 +167,6 @@ def _upsert_vectors_batched(
             logger.info("Index upsert: %d/%d", i1, n)
 
 
-
 def _local_mmr_on_candidates(
     q_vec: np.ndarray,
     cand_vecs: np.ndarray,
@@ -190,7 +193,6 @@ def _local_mmr_on_candidates(
     return sel_pos, sel_sc
 
 
-
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True, help="processed CSV (from preprocess)")
@@ -207,7 +209,7 @@ def parse_args() -> argparse.Namespace:
         dest="save_central_vectors",
         action="store_true",
         default=True,
-        help="Save a central demo-friendly copy under artifacts/vectors/proposed_vectors.csv",
+        help="Save canonical proposed vector artifacts under artifacts/vectors/",
     )
     ap.add_argument(
         "--no-save-central-vectors",
@@ -228,7 +230,6 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--mmr-lambda", type=float, default=-1.0)
     ap.add_argument("--ild-space", choices=["emotion_ratio", "embedding", "z"], default="emotion_ratio")
     return ap.parse_args()
-
 
 
 def main() -> None:
@@ -270,7 +271,6 @@ def main() -> None:
 
     logger.info("Loaded processed data: %s | rows=%d cols=%d", data_path, len(meta_df), len(meta_df.columns))
 
-    # --- Build or load emotion-context vectors ---
     if args.vectors_csv:
         vec_path = Path(args.vectors_csv)
         if not vec_path.is_absolute():
@@ -283,14 +283,6 @@ def main() -> None:
         vectors_df = build_song_vectors_from_df(meta_df, cfg, out_csv=out_vec, paths=PATHS, logger=logger)
         vec_path = out_vec if out_vec is not None else None
 
-    if args.save_central_vectors:
-        central_out = args.central_vectors_out or None
-        if args.vectors_csv:
-            central_path = copy_vector_csv(vec_path, "proposed", out_path=central_out, paths=PATHS)
-        else:
-            central_path = save_central_vectors(vectors_df, "proposed", out_path=central_out, paths=PATHS)
-        logger.info("Saved central proposed vectors: %s", central_path)
-
     if "song_id" not in vectors_df.columns:
         raise ValueError("vectors_df missing 'song_id'")
 
@@ -302,6 +294,26 @@ def main() -> None:
 
     vec_cols = _vector_cols(vectors_df, prefix="z_")
     logger.info("Vectors ready: rows=%d dim=%d", len(vectors_df), len(vec_cols))
+
+    if args.save_central_vectors:
+        central_csv = save_central_vectors(
+            vectors_df,
+            "proposed",
+            out_path=(args.central_vectors_out or None),
+            paths=PATHS,
+        )
+        logger.info("Saved central proposed vectors (csv): %s", central_csv)
+
+        Z_all = vectors_df[vec_cols].to_numpy(dtype=np.float32)
+        central_npz = save_dense_vectors_npz(Z_all, "proposed", paths=PATHS)
+        logger.info("Saved central proposed vectors (npz): %s", central_npz)
+
+        save_song_ids(
+            vectors_df["song_id"].astype(str).to_numpy(),
+            "proposed",
+            paths=PATHS,
+        )
+        logger.info("Saved central proposed song ids")
 
     have = set(vectors_df["song_id"].astype(str).tolist())
     before = len(meta_df)
@@ -318,18 +330,29 @@ def main() -> None:
         e.lower()
         for e in cfg_get(cfg, ["emotion", "emotions"], ["anger", "fear", "joy", "sadness", "disgust", "trust"])
     ]
-    intensity_enabled = bool(cfg_get(cfg, ["intensity", "enabled"], True))
-    vad_enabled = bool(cfg_get(cfg, ["vad", "enabled"], True))
-    comps = _split_z_components(Z, emotions=emotions, intensity_enabled=intensity_enabled, vad_enabled=vad_enabled)
-    emotion_vectors = comps["emotion_ratio"]
+    vector_layout = str(cfg_get(cfg, ["aggregation", "vector_layout"], "embedding_ratio_vad"))
+    comps = _split_z_components(Z, emotions=emotions, vector_layout=vector_layout)
+
+    ec_rep = str(cfg_get(cfg, ["metrics", "emotion_consistency", "representation"], "emotion_ratio_vad")).lower()
+    if ec_rep in {"emotion_ratio_vad", "ratio_vad"} and "vad" in comps and comps["vad"].shape[1] == 3:
+        emotion_vectors = np.concatenate([comps["emotion_ratio"], comps["vad"]], axis=1).astype(np.float32, copy=False)
+    else:
+        emotion_vectors = comps["emotion_ratio"]
+
     if args.ild_space == "embedding":
         item_vectors = comps["embedding"]
     elif args.ild_space == "z":
         item_vectors = Z
     else:
-        item_vectors = comps["emotion_ratio"]
+        item_vectors = emotion_vectors
 
-    # --- Open / build VectorDB index ---
+    song_feat_df = pd.DataFrame(comps["emotion_ratio"], columns=[f"ratio_{e}" for e in emotions])
+    if "vad" in comps and comps["vad"].shape[1] == 3:
+        song_feat_df[["valence", "arousal", "dominance"]] = comps["vad"]
+    song_feat_df.insert(0, "song_id", meta_df["song_id"].astype(str).tolist())
+    save_csv(song_feat_df, art_dir / "proposed_song_features.csv", index=False)
+    np.save(art_dir / "proposed_song_ids.npy", meta_df["song_id"].astype(str).to_numpy(dtype=object))
+
     if args.rebuild_index:
         cfg = dict(cfg)
         cfg["index"] = dict(cfg.get("index", {}))
@@ -354,7 +377,6 @@ def main() -> None:
     else:
         logger.info("VectorDB already has entries. count=%d (skip upsert)", db.count())
 
-    # --- Query sampling ---
     eval_seed = int(cfg_get(cfg, ["eval", "seed"], args.seed))
     n_queries = int(cfg_get(cfg, ["eval", "n_queries"], 300))
     if args.n_queries and args.n_queries > 0:
@@ -370,7 +392,6 @@ def main() -> None:
     )
     logger.info("Sampled queries: n=%d", len(q_idx))
 
-    # --- Retrieval settings ---
     top_m = int(cfg_get(cfg, ["retrieval", "top_m"], 200))
     top_k = int(cfg_get(cfg, ["retrieval", "top_k"], 20))
     if args.top_m and args.top_m > 0:
@@ -398,7 +419,6 @@ def main() -> None:
 
     sid_to_index = {str(sid): i for i, sid in enumerate(meta_df["song_id"].astype(str).tolist())}
 
-    # --- Retrieval loop ---
     rec_indices_list: List[np.ndarray] = []
     rec_scores_list: List[np.ndarray] = []
     for t, qi in enumerate(q_idx.tolist(), start=1):
@@ -458,7 +478,6 @@ def main() -> None:
     rec_df = build_recommendations_table(meta_df, q_idx, rec_indices_list, rec_scores_list)
     save_csv(rec_df, art_dir / "proposed_recommendations.csv", index=False)
 
-    # --- Evaluation ---
     k_values = tuple(int(x) for x in cfg_get(cfg, ["eval", "k_values"], [5, 10, 20]))
     eval_cfg = _safe_dataclass_init(EvalConfig, k_values=k_values)
 

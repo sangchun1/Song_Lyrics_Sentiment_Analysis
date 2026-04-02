@@ -40,7 +40,12 @@ data/
 assets/lexicons/
 assets/lid/
 artifacts/indexes/
-artifacts/runs/proposed_20260305_221715_966c26f9/emotion_context_vectors.csv
+artifacts/runs/*/emotion_context_vectors.csv
+artifacts/vectors/proposed_vectors.csv
+artifacts/runs/*/baseline_tfidf_vocab_idf.csv
+artifacts/runs/*/baseline_song_emotion_distribution.csv
+artifacts/runs/*/baseline_vocab_index.csv
+artifacts/runs/*/proposed_song_features.csv
 *.npz
 *.npy
 

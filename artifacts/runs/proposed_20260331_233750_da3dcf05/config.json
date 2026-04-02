@@ -1,0 +1,154 @@
+{
+  "pipeline": "run_proposed",
+  "params": {
+    "data": "data/processed/genius_processed.csv",
+    "eval_config": "configs/eval.yaml",
+    "retrieval_config": "configs/retrieval.yaml",
+    "emotion_config": "configs/emotion_context.yaml",
+    "seed": 42,
+    "vectors_csv": "",
+    "save_vectors": true,
+    "save_central_vectors": true,
+    "central_vectors_out": "",
+    "rebuild_index": true,
+    "n_queries": 100,
+    "top_m": 200,
+    "top_k": 20,
+    "disable_mmr": false,
+    "mmr_lambda": 0.7,
+    "ild_space": "emotion_ratio"
+  },
+  "merged_cfg": {
+    "eval": {
+      "seed": 42,
+      "n_queries": 300,
+      "k_values": [
+        5,
+        10,
+        20
+      ],
+      "query_sampling": {
+        "stratify_by": [
+          "genre"
+        ],
+        "min_per_stratum": 10
+      }
+    },
+    "pseudo_ground_truth": {
+      "year_window": 10,
+      "require_same_genre": true,
+      "exclude_same_song": true,
+      "exclude_same_artist": true,
+      "graded_relevance": {
+        "enabled": true,
+        "grade_if_same_genre_and_within_year": 2,
+        "grade_if_same_genre_only": 0,
+        "max_grade1_per_query": 0
+      }
+    },
+    "metrics": {
+      "recall": {
+        "enabled": true
+      },
+      "ndcg": {
+        "enabled": true
+      },
+      "emotion_consistency": {
+        "enabled": true,
+        "representation": "emotion_ratio_vad",
+        "similarity": "cosine",
+        "threshold": null
+      },
+      "ild": {
+        "enabled": true,
+        "distance": "1-cosine"
+      }
+    },
+    "outputs": {
+      "song_vector_name": "emotion_context_vectors",
+      "line_feature_name": "emotion_context_line_features",
+      "save_line_features": false
+    },
+    "index": {
+      "backend": "chroma",
+      "persist_dir": "artifacts/indexes/chroma",
+      "collection_name": "lyrics_reco",
+      "metric": "cosine",
+      "rebuild": false
+    },
+    "retrieval": {
+      "similarity": "cosine",
+      "top_m": 200,
+      "top_k": 20,
+      "mmr": {
+        "enabled": true,
+        "lambda": 0.7,
+        "similarity": "cosine",
+        "min_candidates": 50
+      }
+    },
+    "filters": {
+      "exclude_same_song": true,
+      "exclude_same_artist": false,
+      "year_window": null
+    },
+    "embedder": {
+      "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+      "device": "auto",
+      "batch_size": 64,
+      "normalize_embeddings": true,
+      "max_length": 256
+    },
+    "text": {
+      "embedding_text_col": "lyrics_dedup",
+      "lexicon_text_col": "lyrics_clean",
+      "fallback_embedding_text_col": "lyrics_clean",
+      "fallback_lexicon_text_col": "lyrics_dedup",
+      "line_split": "newline",
+      "keep_original_for_lexicon": true,
+      "dedup_for_embedding": true,
+      "strip_brackets": true,
+      "min_line_chars": 3,
+      "max_lines_per_song": 250
+    },
+    "emotion": {
+      "emotions": [
+        "anger",
+        "fear",
+        "joy",
+        "sadness",
+        "disgust",
+        "trust"
+      ],
+      "nrc_lexicon_file": "assets/lexicons/nrc_lexicon.txt"
+    },
+    "intensity": {
+      "enabled": true,
+      "nrc_intensity_file": "assets/lexicons/nrc_intensity.txt",
+      "aggregation": "mean"
+    },
+    "vad": {
+      "enabled": true,
+      "vad_lexicon_file": "assets/lexicons/vad_lexicon.txt",
+      "aggregation": "mean"
+    },
+    "line_weighting": {
+      "alpha_emotion": 1.0,
+      "beta_intensity": 0.5,
+      "gamma_arousal": 0.25,
+      "normalize": "softmax",
+      "softmax_temperature": 1.0
+    },
+    "aggregation": {
+      "method": "weighted_mean",
+      "vector_layout": "embedding_ratio_vad",
+      "include_vad": true,
+      "include_intensity_tail": false,
+      "song_feature_weight": "emotion_word_count",
+      "min_emotion_word_count": 1
+    },
+    "runtime": {
+      "song_batch_size": 512
+    }
+  }
+}

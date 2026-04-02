@@ -1,18 +1,12 @@
 """lyrics_reco.emotion_context.line_features
 
 Vectorized lexicon feature computation for a batch of lyric lines.
-
-This is intentionally fast:
-- CountVectorizer restricted to lexicon vocab
-- sparse matrix multiplications
-
-Outputs a DataFrame aligned to input lines.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -21,7 +15,8 @@ from sklearn.feature_extraction.text import CountVectorizer
 
 from ..lexicon.load import LexiconsBundle
 
-_TOKEN_PATTERN = r"(?u)\b[a-zA-Z]+(?:'[a-zA-Z]+)?\b"
+_TOKEN_PATTERN = r"(?u)[a-zA-Z]+(?:'[a-zA-Z]+)?"
+
 
 @dataclass(frozen=True)
 class LineFeatureConfig:
@@ -31,9 +26,11 @@ class LineFeatureConfig:
     intensity_aggregation: str = "mean"  # mean|sum
     vad_aggregation: str = "mean"        # mean|sum
 
+
 def _count_tokens(texts: Sequence[str]) -> np.ndarray:
     ser = pd.Series(list(texts), dtype="string")
     return ser.fillna("").str.count(_TOKEN_PATTERN).astype(int).to_numpy()
+
 
 def compute_line_lexicon_features(
     lines: Sequence[str],
@@ -45,7 +42,7 @@ def compute_line_lexicon_features(
     if n == 0:
         return pd.DataFrame()
 
-    nrc_df = bundle.nrc.df.copy()  # index word, cols emotions
+    nrc_df = bundle.nrc.df.copy()
     if cfg.emotions is not None:
         emo_cols = [e.lower() for e in cfg.emotions]
         for e in emo_cols:
@@ -56,9 +53,9 @@ def compute_line_lexicon_features(
 
     vocab_words = nrc_df.index.astype(str).tolist()
     cv = CountVectorizer(vocabulary=vocab_words, lowercase=True, token_pattern=_TOKEN_PATTERN)
-    Xw = cv.fit_transform(lines)  # (N,V)
+    Xw = cv.fit_transform(lines)
 
-    W = sparse.csr_matrix(nrc_df.values.astype(np.float32))  # (V,E)
+    W = sparse.csr_matrix(nrc_df.values.astype(np.float32))
     emo_counts = (Xw @ W).astype(np.float32)
     emo_counts_dense = np.asarray(emo_counts.todense(), dtype=np.float32)
 
@@ -76,11 +73,10 @@ def compute_line_lexicon_features(
     out["emotion_word_count"] = emotion_word_count.astype(int)
     out["total_tokens"] = total_tokens.astype(int)
 
-    # intensity (optional)
     if cfg.intensity_enabled and bundle.intensity is not None:
         inten_df = bundle.intensity.df.copy()
         inten_df = inten_df.reindex(index=nrc_df.index, columns=emo_cols, fill_value=0.0).astype(np.float32)
-        I = sparse.csr_matrix(inten_df.values)  # (V,E)
+        I = sparse.csr_matrix(inten_df.values)
 
         inten_sum = (Xw @ I).astype(np.float32)
         inten_sum_dense = np.asarray(inten_sum.todense(), dtype=np.float32)
@@ -98,16 +94,15 @@ def compute_line_lexicon_features(
         for j, e in enumerate(emo_cols):
             out[f"intensity_{e}"] = inten_out[:, j].astype(float)
 
-    # VAD (optional)
     if cfg.vad_enabled and bundle.vad is not None:
         vad_df = bundle.vad.df.copy()
         vad_words = vad_df.index.astype(str).tolist()
 
         cv_vad = CountVectorizer(vocabulary=vad_words, lowercase=True, token_pattern=_TOKEN_PATTERN)
-        Xv = cv_vad.fit_transform(lines)  # (N, Vv)
+        Xv = cv_vad.fit_transform(lines)
 
         V = vad_df[["valence", "arousal", "dominance"]].astype(np.float32).to_numpy()
-        Vmat = sparse.csr_matrix(V)  # (Vv,3)
+        Vmat = sparse.csr_matrix(V)
 
         vad_sum = (Xv @ Vmat).astype(np.float32)
         vad_sum_dense = np.asarray(vad_sum.todense(), dtype=np.float32)
@@ -123,5 +118,34 @@ def compute_line_lexicon_features(
         out["arousal"] = vad_out[:, 1].astype(float)
         out["dominance"] = vad_out[:, 2].astype(float)
         out["vad_word_count"] = vad_cnt.astype(int)
+
+    count_cols = [c for c in out.columns if c.startswith("count_")]
+    inten_cols = [c for c in out.columns if c.startswith("intensity_")]
+    out["line_emotion_mass"] = out[count_cols].sum(axis=1).astype(float) if count_cols else 0.0
+    out["line_has_emotion"] = (out["emotion_word_count"] > 0).astype(int)
+
+    if inten_cols:
+        tmp = out[inten_cols].replace(0, np.nan)
+        out["line_intensity_mean"] = tmp.mean(axis=1).fillna(0.0).astype(float)
+
+        intensity_mass = np.zeros(len(out), dtype=np.float32)
+        for c in count_cols:
+            emo = c.replace("count_", "")
+            ic = f"intensity_{emo}"
+            if ic in out.columns:
+                intensity_mass += (
+                    out[c].to_numpy(dtype=np.float32)
+                    * out[ic].to_numpy(dtype=np.float32)
+                )
+        out["line_intensity_mass"] = intensity_mass.astype(float)
+    else:
+        out["line_intensity_mean"] = 0.0
+        out["line_intensity_mass"] = 0.0
+
+    if "vad_word_count" not in out.columns:
+        out["vad_word_count"] = 0
+        out["valence"] = 0.0
+        out["arousal"] = 0.0
+        out["dominance"] = 0.0
 
     return out

@@ -1,0 +1,11 @@
+﻿model,query_song_id,query_title,query_artist,rec_song_id,title,artist,year,genre,rank,model_score,emotion_similarity,emotion_similarity_pct,year_gap
+baseline,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,7f648ad6501f9d95eff9f002913a918b1f0e3898,Hello,Stephen,2015,rock,1,0.8554481267929077,0.0,0.0,0
+baseline,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,4ab7e5d91f600c2314cccf82e7f97df4bd106cc4,Mark My Hands,Lindy & The Circuit Riders,2019,pop,2,0.6834689378738403,0.0,0.0,4
+baseline,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,3d6df4d2b6e3d4d48068caab7b44b206bb384221,Come to the Sabbat,Black Widow,1970,rock,3,0.6581097841262817,0.0,0.0,45
+baseline,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,b3086a6dbe6d3ab46a10952a15c3d2f6f61e51ea,Healing,Kryder,2022,pop,4,0.6536246538162231,0.0,0.0,7
+baseline,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,ef0b42f498f688bb3982a595d305cd9cd31f5856,No Other Name,Todd Dulaney,2015,pop,5,0.6392190456390381,0.0,0.0,0
+baseline,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,d4a21b33a0161c2f7165a3497f170c03ed04f59b,Music Is The Answer,Joe Goddard,2017,pop,6,0.634027898311615,0.0,0.0,2
+baseline,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,b2c348314cbd9ffcc025e4aed4998aeae07c43d9,Healing Lies,Bad Randoms,2022,rock,7,0.6312941312789917,0.0,0.0,7
+baseline,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,a44229f95c59b6e1338ea1ea64b6464b62b24562,Heal Our Land,Planetshakers,2012,pop,8,0.6253538727760315,0.0,0.0,3
+baseline,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,df1c5415eb29e9dd4a04b7d25a1bf53a2e83d90c,Open Page,Lenzman,2015,pop,9,0.5996524691581726,0.0,0.0,0
+baseline,5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b,Hello,Adele,6ffa01fc311f49fcbc5428144157887ffe1a5421,Secret Touch,Rush,2002,rock,10,0.5960728526115417,0.0,0.0,13
