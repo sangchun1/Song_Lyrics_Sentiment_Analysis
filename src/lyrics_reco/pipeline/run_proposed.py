@@ -31,6 +31,7 @@ from ..emotion_context.builder import build_song_vectors_from_df
 from ..evaluation.pseudo_gt import PseudoGTConfig
 from ..evaluation.runner import EvalConfig, evaluate_from_rec_table
 from ..pipeline.utils import cfg_get, make_run_dirs, sample_queries
+from ..retrieval.dedup import DedupConfig, filter_query_equivalent_candidates
 from ..retrieval.filters import FilterConfig, filter_candidates
 from ..retrieval.mmr import mmr_rerank
 from ..retrieval.results import build_recommendations_table
@@ -82,6 +83,75 @@ def _to_python_scalar(v: Any) -> Any:
     if isinstance(v, (str, int, float, bool)):
         return v
     return str(v)
+
+
+def _resolve_lyrics_col(meta_df: pd.DataFrame) -> str:
+    for col in ("lyrics_dedup", "lyrics_clean", "lyrics"):
+        if col in meta_df.columns:
+            return col
+    return "lyrics_dedup"
+
+
+def _save_central_emotion_profiles(
+    song_feat_df: pd.DataFrame,
+    *,
+    paths=PATHS,
+    logger=None,
+) -> Path:
+    out_path = (paths.root / "artifacts" / "vectors" / "emotion_profiles.csv").resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    save_csv(song_feat_df, out_path, index=False)
+    if logger is not None:
+        logger.info("Saved central emotion profiles (csv): %s", out_path)
+    return out_path
+
+
+def _log_emotion_vector_qc(
+    emotion_vectors: np.ndarray,
+    comps: Dict[str, np.ndarray],
+    *,
+    logger=None,
+) -> None:
+    if logger is None or emotion_vectors.size == 0:
+        return
+
+    ratio = comps.get("emotion_ratio")
+    if ratio is not None and ratio.size > 0:
+        ratio_l1 = np.sum(np.abs(ratio), axis=1)
+        logger.info(
+            "Emotion ratio QC | dim=%d nonzero_ratio=%.4f mean_l1=%.6f",
+            int(ratio.shape[1]),
+            float(np.mean(ratio_l1 > 0.0)),
+            float(np.mean(ratio_l1)),
+        )
+
+    intensity = comps.get("intensity")
+    if intensity is not None and intensity.size > 0:
+        intensity_l1 = np.sum(np.abs(intensity), axis=1)
+        logger.info(
+            "Emotion intensity QC | dim=%d nonzero_ratio=%.4f mean_l1=%.6f",
+            int(intensity.shape[1]),
+            float(np.mean(intensity_l1 > 0.0)),
+            float(np.mean(intensity_l1)),
+        )
+
+    vad = comps.get("vad")
+    if vad is not None and vad.size > 0:
+        vad_l2 = np.linalg.norm(vad, axis=1)
+        logger.info(
+            "VAD QC | dim=%d nonzero_ratio=%.4f mean_l2=%.6f",
+            int(vad.shape[1]),
+            float(np.mean(vad_l2 > 0.0)),
+            float(np.mean(vad_l2)),
+        )
+
+    emo_l2 = np.linalg.norm(emotion_vectors, axis=1)
+    logger.info(
+        "Emotion evaluation vector QC | dim=%d nonzero_ratio=%.4f mean_l2=%.6f",
+        int(emotion_vectors.shape[1]),
+        float(np.mean(emo_l2 > 0.0)),
+        float(np.mean(emo_l2)),
+    )
 
 
 def _split_z_components(
@@ -347,11 +417,18 @@ def main() -> None:
         item_vectors = emotion_vectors
 
     song_feat_df = pd.DataFrame(comps["emotion_ratio"], columns=[f"ratio_{e}" for e in emotions])
+    if "intensity" in comps and comps["intensity"].shape[1] == len(emotions):
+        intensity_df = pd.DataFrame(comps["intensity"], columns=[f"intensity_{e}" for e in emotions])
+        song_feat_df = pd.concat([song_feat_df, intensity_df], axis=1)
     if "vad" in comps and comps["vad"].shape[1] == 3:
         song_feat_df[["valence", "arousal", "dominance"]] = comps["vad"]
     song_feat_df.insert(0, "song_id", meta_df["song_id"].astype(str).tolist())
     save_csv(song_feat_df, art_dir / "proposed_song_features.csv", index=False)
+    if args.save_central_vectors:
+        _save_central_emotion_profiles(song_feat_df, paths=PATHS, logger=logger)
     np.save(art_dir / "proposed_song_ids.npy", meta_df["song_id"].astype(str).to_numpy(dtype=object))
+
+    _log_emotion_vector_qc(emotion_vectors, comps, logger=logger)
 
     if args.rebuild_index:
         cfg = dict(cfg)
@@ -415,7 +492,29 @@ def main() -> None:
         artist_col="artist",
         year_col="year",
     )
+    dedup_enabled = bool(cfg_get(cfg, ["filters", "dedup_query_equivalents"], True))
+    oversample_factor = max(1, int(cfg_get(cfg, ["filters", "oversample_factor"], 3)))
+    lyrics_col = _resolve_lyrics_col(meta_df)
+    dcfg = DedupConfig(
+        title_col="title",
+        artist_col="artist",
+        lyrics_col=lyrics_col,
+    )
     metric = str(cfg_get(cfg, ["index", "metric"], "cosine"))
+    query_fetch_k = max(top_m, top_k, top_m * oversample_factor)
+    if dedup_enabled:
+        query_fetch_k = max(query_fetch_k, top_k + 50)
+
+    logger.info(
+        "Retrieval settings | top_m=%d top_k=%d fetch_k=%d mmr=%s dedup=%s oversample_factor=%d lyrics_col=%s",
+        top_m,
+        top_k,
+        query_fetch_k,
+        mmr_enabled,
+        dedup_enabled,
+        oversample_factor,
+        lyrics_col,
+    )
 
     sid_to_index = {str(sid): i for i, sid in enumerate(meta_df["song_id"].astype(str).tolist())}
 
@@ -425,7 +524,7 @@ def main() -> None:
         qi = int(qi)
         q_vec = Z[qi].astype(np.float32, copy=False)
 
-        res = db.query(q_vec, top_k=top_m, where=None, include=["distances"])
+        res = db.query(q_vec, top_k=query_fetch_k, where=None, include=["distances"])
         ids = res.get("ids", [[]])[0]
         dists = res.get("distances", [[]])[0]
 
@@ -447,6 +546,25 @@ def main() -> None:
             cand_scores=cand_scores_np,
             cfg=fcfg,
         )
+
+        filtered_before_dedup = int(cand_indices_np.size)
+        if dedup_enabled and cand_indices_np.size > 0:
+            cand_indices_np, cand_scores_np = filter_query_equivalent_candidates(
+                meta_df,
+                query_index=qi,
+                cand_indices=cand_indices_np,
+                cand_scores=cand_scores_np,
+                cfg=dcfg,
+            )
+            removed = filtered_before_dedup - int(cand_indices_np.size)
+            if removed > 0 and (t <= 5 or t % 25 == 0 or t == len(q_idx)):
+                logger.info(
+                    "Dedup filtered query %d/%d | removed=%d remaining=%d",
+                    t,
+                    len(q_idx),
+                    removed,
+                    int(cand_indices_np.size),
+                )
 
         if cand_indices_np.size == 0:
             rec_indices_list.append(np.array([], dtype=int))

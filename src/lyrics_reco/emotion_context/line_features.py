@@ -5,6 +5,7 @@ Vectorized lexicon feature computation for a batch of lyric lines.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -15,7 +16,12 @@ from sklearn.feature_extraction.text import CountVectorizer
 
 from ..lexicon.load import LexiconsBundle
 
-_TOKEN_PATTERN = r"(?u)[a-zA-Z]+(?:'[a-zA-Z]+)?"
+logger = logging.getLogger(__name__)
+
+# NOTE:
+# Use a normal word-boundary token pattern. The previous pattern contained a
+# broken boundary character, which can silently corrupt lexicon matching.
+_TOKEN_PATTERN = r"(?u)\b[a-zA-Z]+(?:'[a-zA-Z]+)?\b"
 
 
 @dataclass(frozen=True)
@@ -30,6 +36,24 @@ class LineFeatureConfig:
 def _count_tokens(texts: Sequence[str]) -> np.ndarray:
     ser = pd.Series(list(texts), dtype="string")
     return ser.fillna("").str.count(_TOKEN_PATTERN).astype(int).to_numpy()
+
+
+def _log_line_feature_qc(out: pd.DataFrame) -> None:
+    """Emit lightweight QA stats for line-level lexicon features."""
+    if out.empty:
+        return
+
+    emotion_nonzero_ratio = float((out["emotion_word_count"] > 0).mean())
+    vad_nonzero_ratio = float((out["vad_word_count"] > 0).mean()) if "vad_word_count" in out.columns else 0.0
+    intensity_mean_avg = float(out["line_intensity_mean"].mean()) if "line_intensity_mean" in out.columns else 0.0
+
+    logger.info(
+        "line feature QA | lines=%d | emotion_nonzero_ratio=%.4f | vad_nonzero_ratio=%.4f | avg_line_intensity_mean=%.4f",
+        len(out),
+        emotion_nonzero_ratio,
+        vad_nonzero_ratio,
+        intensity_mean_avg,
+    )
 
 
 def compute_line_lexicon_features(
@@ -148,4 +172,5 @@ def compute_line_lexicon_features(
         out["arousal"] = 0.0
         out["dominance"] = 0.0
 
+    _log_line_feature_qc(out)
     return out

@@ -28,9 +28,15 @@ from ..evaluation.pseudo_gt import PseudoGTConfig
 from ..evaluation.runner import EvalConfig, evaluate_from_rec_table
 from ..pipeline.utils import cfg_get, make_run_dirs, sample_queries
 from ..retrieval.cosine import topk_cosine
+from ..retrieval.dedup import DedupConfig, filter_query_equivalent_candidates
 from ..retrieval.filters import FilterConfig, filter_candidates
 from ..retrieval.mmr import mmr_rerank
 from ..retrieval.results import build_recommendations_table
+
+
+def _safe_dataclass_init(cls, **kwargs):
+    fields = getattr(cls, "__dataclass_fields__", {}) or {}
+    return cls(**{k: v for k, v in kwargs.items() if k in fields})
 
 
 def _load_configs(*paths: str) -> Dict[str, Any]:
@@ -52,6 +58,13 @@ def _resolve_existing_path(path_str: str | None, fallback: Path | None) -> Path:
     return fallback.resolve()
 
 
+def _resolve_lyrics_col(meta_df: pd.DataFrame) -> str:
+    for col in ("lyrics_dedup", "lyrics_clean", "lyrics"):
+        if col in meta_df.columns:
+            return col
+    return "lyrics_dedup"
+
+
 def _vector_cols(df: pd.DataFrame, prefix: str = "z_") -> List[str]:
     cols = [c for c in df.columns if c.startswith(prefix)]
     if not cols:
@@ -59,7 +72,13 @@ def _vector_cols(df: pd.DataFrame, prefix: str = "z_") -> List[str]:
     return sorted(cols, key=lambda c: int(c.split("_", 1)[1]))
 
 
-def _topk_cosine_sparse(Xn: sparse.csr_matrix, query_index: int, top_k: int, *, exclude_self: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+def _topk_cosine_sparse(
+    Xn: sparse.csr_matrix,
+    query_index: int,
+    top_k: int,
+    *,
+    exclude_self: bool = False,
+) -> Tuple[np.ndarray, np.ndarray]:
     q = Xn.getrow(int(query_index))
     scores = (Xn @ q.T).toarray().ravel().astype(np.float32)
     if exclude_self:
@@ -72,15 +91,19 @@ def _topk_cosine_sparse(Xn: sparse.csr_matrix, query_index: int, top_k: int, *, 
     return idx.astype(int), scores[idx].astype(np.float32)
 
 
-def _split_z_components(Z: np.ndarray, emotions: Sequence[str], vector_layout: str) -> Dict[str, np.ndarray]:
+def _split_z_components(
+    Z: np.ndarray,
+    emotions: Sequence[str],
+    vector_layout: str,
+) -> Dict[str, np.ndarray]:
     emo_dim = len(list(emotions))
     if vector_layout == "embedding_ratio_vad":
         tail = emo_dim + 3
         emb_dim = Z.shape[1] - tail
         return {
             "embedding": Z[:, :emb_dim].astype(np.float32, copy=False),
-            "emotion_ratio": Z[:, emb_dim: emb_dim + emo_dim].astype(np.float32, copy=False),
-            "vad": Z[:, emb_dim + emo_dim: emb_dim + emo_dim + 3].astype(np.float32, copy=False),
+            "emotion_ratio": Z[:, emb_dim : emb_dim + emo_dim].astype(np.float32, copy=False),
+            "vad": Z[:, emb_dim + emo_dim : emb_dim + emo_dim + 3].astype(np.float32, copy=False),
         }
     if vector_layout == "embedding_ratio_intensity_vad":
         tail = emo_dim + emo_dim + 3
@@ -88,14 +111,62 @@ def _split_z_components(Z: np.ndarray, emotions: Sequence[str], vector_layout: s
         pos = emb_dim
         out = {
             "embedding": Z[:, :emb_dim].astype(np.float32, copy=False),
-            "emotion_ratio": Z[:, pos: pos + emo_dim].astype(np.float32, copy=False),
+            "emotion_ratio": Z[:, pos : pos + emo_dim].astype(np.float32, copy=False),
         }
         pos += emo_dim
-        out["intensity"] = Z[:, pos: pos + emo_dim].astype(np.float32, copy=False)
+        out["intensity"] = Z[:, pos : pos + emo_dim].astype(np.float32, copy=False)
         pos += emo_dim
-        out["vad"] = Z[:, pos: pos + 3].astype(np.float32, copy=False)
+        out["vad"] = Z[:, pos : pos + 3].astype(np.float32, copy=False)
         return out
     raise ValueError(f"Unknown vector layout: {vector_layout}")
+
+
+def _log_emotion_vector_qc(
+    emotion_vectors: np.ndarray,
+    comps: Dict[str, np.ndarray],
+    *,
+    logger=None,
+) -> None:
+    if logger is None or emotion_vectors.size == 0:
+        return
+
+    ratio = comps.get("emotion_ratio")
+    if ratio is not None and ratio.size > 0:
+        ratio_l1 = np.sum(np.abs(ratio), axis=1)
+        logger.info(
+            "Fusion emotion ratio QC | dim=%d nonzero_ratio=%.4f mean_l1=%.6f",
+            int(ratio.shape[1]),
+            float(np.mean(ratio_l1 > 0.0)),
+            float(np.mean(ratio_l1)),
+        )
+
+    intensity = comps.get("intensity")
+    if intensity is not None and intensity.size > 0:
+        intensity_l1 = np.sum(np.abs(intensity), axis=1)
+        logger.info(
+            "Fusion emotion intensity QC | dim=%d nonzero_ratio=%.4f mean_l1=%.6f",
+            int(intensity.shape[1]),
+            float(np.mean(intensity_l1 > 0.0)),
+            float(np.mean(intensity_l1)),
+        )
+
+    vad = comps.get("vad")
+    if vad is not None and vad.size > 0:
+        vad_l2 = np.linalg.norm(vad, axis=1)
+        logger.info(
+            "Fusion VAD QC | dim=%d nonzero_ratio=%.4f mean_l2=%.6f",
+            int(vad.shape[1]),
+            float(np.mean(vad_l2 > 0.0)),
+            float(np.mean(vad_l2)),
+        )
+
+    emo_l2 = np.linalg.norm(emotion_vectors, axis=1)
+    logger.info(
+        "Fusion evaluation emotion vector QC | dim=%d nonzero_ratio=%.4f mean_l2=%.6f",
+        int(emotion_vectors.shape[1]),
+        float(np.mean(emo_l2 > 0.0)),
+        float(np.mean(emo_l2)),
+    )
 
 
 def _normalize_minmax(scores: np.ndarray) -> np.ndarray:
@@ -109,6 +180,29 @@ def _normalize_minmax(scores: np.ndarray) -> np.ndarray:
     return (scores - lo) / (hi - lo)
 
 
+def _weighted_rrf_scores(
+    cand_indices: np.ndarray,
+    *,
+    base_rank_map: Dict[int, int],
+    prop_rank_map: Dict[int, int],
+    fusion_lambda: float,
+    rrf_k: int,
+) -> np.ndarray:
+    lam = min(max(float(fusion_lambda), 0.0), 1.0)
+    out = np.zeros(len(cand_indices), dtype=np.float32)
+    denom_k = max(int(rrf_k), 1)
+    for pos, idx in enumerate(cand_indices.astype(int).tolist()):
+        score = 0.0
+        base_rank = base_rank_map.get(int(idx))
+        prop_rank = prop_rank_map.get(int(idx))
+        if prop_rank is not None:
+            score += lam / float(denom_k + int(prop_rank))
+        if base_rank is not None:
+            score += (1.0 - lam) / float(denom_k + int(base_rank))
+        out[pos] = score
+    return out
+
+
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
@@ -120,11 +214,13 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--proposed-csv", default="")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--fusion-lambda", type=float, default=0.6)
+    ap.add_argument("--fusion-method", choices=["weighted_rrf", "rrf", "minmax_linear"], default="")
+    ap.add_argument("--rrf-k", type=int, default=0)
     ap.add_argument("--n-queries", type=int, default=0)
     ap.add_argument("--top-m", type=int, default=0)
     ap.add_argument("--top-k", type=int, default=0)
     ap.add_argument("--use-mmr", action="store_true", default=False)
-    ap.add_argument("--mmr-lambda", type=float, default=0.7)
+    ap.add_argument("--mmr-lambda", type=float, default=-1.0)
     return ap.parse_args()
 
 
@@ -168,11 +264,18 @@ def main() -> None:
     aligned = lookup.loc[meta_df["song_id"].astype(str).tolist()]
     Z = aligned[vec_cols].to_numpy(dtype=np.float32)
 
-    emotions = [e.lower() for e in cfg_get(cfg, ["emotion", "emotions"], ["anger", "fear", "joy", "sadness", "disgust", "trust"])]
+    emotions = [
+        e.lower()
+        for e in cfg_get(cfg, ["emotion", "emotions"], ["anger", "fear", "joy", "sadness", "disgust", "trust"])
+    ]
     vector_layout = str(cfg_get(cfg, ["aggregation", "vector_layout"], "embedding_ratio_vad"))
     comps = _split_z_components(Z, emotions, vector_layout)
-    emotion_vectors = np.concatenate([comps["emotion_ratio"], comps.get("vad", np.zeros((len(Z), 0), dtype=np.float32))], axis=1)
+    emotion_vectors = np.concatenate(
+        [comps["emotion_ratio"], comps.get("vad", np.zeros((len(Z), 0), dtype=np.float32))],
+        axis=1,
+    )
     item_vectors = Z
+    _log_emotion_vector_qc(emotion_vectors, comps, logger=logger)
 
     eval_seed = int(cfg_get(cfg, ["eval", "seed"], args.seed))
     n_queries = int(cfg_get(cfg, ["eval", "n_queries"], 300))
@@ -193,6 +296,21 @@ def main() -> None:
     if args.top_k > 0:
         top_k = args.top_k
 
+    mmr_enabled = bool(cfg_get(cfg, ["retrieval", "mmr", "enabled"], True))
+    if args.use_mmr:
+        mmr_enabled = True
+
+    mmr_lambda = float(cfg_get(cfg, ["retrieval", "mmr", "lambda"], 0.7))
+    if args.mmr_lambda >= 0.0:
+        mmr_lambda = float(args.mmr_lambda)
+
+    fusion_method = str(cfg_get(cfg, ["retrieval", "fusion", "method"], "weighted_rrf")).strip().lower()
+    if args.fusion_method:
+        fusion_method = str(args.fusion_method).strip().lower()
+    rrf_k = int(cfg_get(cfg, ["retrieval", "fusion", "rrf_k"], 60))
+    if args.rrf_k > 0:
+        rrf_k = int(args.rrf_k)
+
     fcfg = FilterConfig(
         exclude_self=bool(cfg_get(cfg, ["filters", "exclude_same_song"], True)),
         exclude_same_artist=bool(cfg_get(cfg, ["filters", "exclude_same_artist"], False)),
@@ -201,13 +319,37 @@ def main() -> None:
         artist_col="artist",
         year_col="year",
     )
+    dedup_enabled = bool(cfg_get(cfg, ["filters", "dedup_query_equivalents"], True))
+    oversample_factor = max(1, int(cfg_get(cfg, ["filters", "oversample_factor"], 3)))
+    lyrics_col = _resolve_lyrics_col(meta_df)
+    dcfg = DedupConfig(
+        title_col="title",
+        artist_col="artist",
+        lyrics_col=lyrics_col,
+    )
+    query_fetch_k = max(top_m, top_k, top_m * oversample_factor)
+    if dedup_enabled:
+        query_fetch_k = max(query_fetch_k, top_k + 50)
+
+    logger.info(
+        "Fusion retrieval settings | top_m=%d top_k=%d fetch_k=%d mmr=%s dedup=%s oversample_factor=%d fusion_method=%s rrf_k=%d lyrics_col=%s",
+        top_m,
+        top_k,
+        query_fetch_k,
+        mmr_enabled,
+        dedup_enabled,
+        oversample_factor,
+        fusion_method,
+        rrf_k,
+        lyrics_col,
+    )
 
     rec_indices_list: List[np.ndarray] = []
     rec_scores_list: List[np.ndarray] = []
-    for qi in q_idx.tolist():
+    for t, qi in enumerate(q_idx.tolist(), start=1):
         qi = int(qi)
-        base_idx, base_sc = _topk_cosine_sparse(X_base, qi, top_m, exclude_self=False)
-        prop_idx, prop_sc = topk_cosine(Z, qi, top_k=top_m, exclude_self=False, normalize=True)
+        base_idx, base_sc = _topk_cosine_sparse(X_base, qi, query_fetch_k, exclude_self=False)
+        prop_idx, prop_sc = topk_cosine(Z, qi, top_k=query_fetch_k, exclude_self=False, normalize=True)
 
         cand_union = sorted(set(base_idx.tolist()) | set(prop_idx.tolist()))
         if not cand_union:
@@ -216,13 +358,28 @@ def main() -> None:
             continue
 
         cand_union_np = np.asarray(cand_union, dtype=int)
-        base_floor = float(np.nanmin(base_sc)) if base_sc.size else 0.0
-        prop_floor = float(np.nanmin(prop_sc)) if prop_sc.size else 0.0
-        base_map = {int(i): float(s) for i, s in zip(base_idx.tolist(), base_sc.tolist())}
-        prop_map = {int(i): float(s) for i, s in zip(prop_idx.tolist(), prop_sc.tolist())}
-        base_scores = np.asarray([base_map.get(int(i), base_floor) for i in cand_union_np], dtype=np.float32)
-        prop_scores = np.asarray([prop_map.get(int(i), prop_floor) for i in cand_union_np], dtype=np.float32)
-        fused_scores = args.fusion_lambda * _normalize_minmax(prop_scores) + (1.0 - args.fusion_lambda) * _normalize_minmax(base_scores)
+        base_rank_map = {int(i): rank + 1 for rank, i in enumerate(base_idx.tolist())}
+        prop_rank_map = {int(i): rank + 1 for rank, i in enumerate(prop_idx.tolist())}
+
+        if fusion_method in {"rrf", "weighted_rrf"}:
+            fused_scores = _weighted_rrf_scores(
+                cand_union_np,
+                base_rank_map=base_rank_map,
+                prop_rank_map=prop_rank_map,
+                fusion_lambda=args.fusion_lambda,
+                rrf_k=rrf_k,
+            )
+        else:
+            base_floor = float(np.nanmin(base_sc)) if base_sc.size else 0.0
+            prop_floor = float(np.nanmin(prop_sc)) if prop_sc.size else 0.0
+            base_map = {int(i): float(s) for i, s in zip(base_idx.tolist(), base_sc.tolist())}
+            prop_map = {int(i): float(s) for i, s in zip(prop_idx.tolist(), prop_sc.tolist())}
+            base_scores = np.asarray([base_map.get(int(i), base_floor) for i in cand_union_np], dtype=np.float32)
+            prop_scores = np.asarray([prop_map.get(int(i), prop_floor) for i in cand_union_np], dtype=np.float32)
+            fused_scores = (
+                args.fusion_lambda * _normalize_minmax(prop_scores)
+                + (1.0 - args.fusion_lambda) * _normalize_minmax(base_scores)
+            )
 
         cand_union_np, fused_scores = filter_candidates(
             meta_df,
@@ -231,6 +388,26 @@ def main() -> None:
             cand_scores=fused_scores,
             cfg=fcfg,
         )
+
+        filtered_before_dedup = int(cand_union_np.size)
+        if dedup_enabled and cand_union_np.size > 0:
+            cand_union_np, fused_scores = filter_query_equivalent_candidates(
+                meta_df,
+                query_index=qi,
+                cand_indices=cand_union_np,
+                cand_scores=fused_scores,
+                cfg=dcfg,
+            )
+            removed = filtered_before_dedup - int(cand_union_np.size)
+            if removed > 0 and (t <= 5 or t % 25 == 0 or t == len(q_idx)):
+                logger.info(
+                    "Fusion dedup filtered query %d/%d | removed=%d remaining=%d",
+                    t,
+                    len(q_idx),
+                    removed,
+                    int(cand_union_np.size),
+                )
+
         if cand_union_np.size == 0:
             rec_indices_list.append(np.array([], dtype=int))
             rec_scores_list.append(np.array([], dtype=float))
@@ -240,8 +417,16 @@ def main() -> None:
         cand_union_np = cand_union_np[order_idx]
         fused_scores = fused_scores[order_idx]
 
-        if args.use_mmr and cand_union_np.size > top_k:
-            sel_idx, sel_sc = mmr_rerank(Z, qi, cand_union_np, fused_scores, top_k=top_k, lambda_=float(args.mmr_lambda))
+        if mmr_enabled and cand_union_np.size > top_k:
+            sel_idx, sel_sc = mmr_rerank(
+                Z,
+                qi,
+                cand_union_np,
+                fused_scores,
+                top_k=top_k,
+                lambda_=mmr_lambda,
+                normalize=True,
+            )
         else:
             sel_idx, sel_sc = cand_union_np[:top_k], fused_scores[:top_k]
 
@@ -251,21 +436,29 @@ def main() -> None:
     rec_df = build_recommendations_table(meta_df, q_idx, rec_indices_list, rec_scores_list)
     save_csv(rec_df, art_dir / "fusion_recommendations.csv", index=False)
 
-    eval_cfg = EvalConfig(k_values=tuple(int(x) for x in cfg_get(cfg, ["eval", "k_values"], [5, 10, 20])))
-    pseudo_cfg = PseudoGTConfig(
-        year_window=cfg_get(cfg, ["pseudo_ground_truth", "year_window"], 10),
-        require_same_genre=bool(cfg_get(cfg, ["pseudo_ground_truth", "require_same_genre"], True)),
-        exclude_self=bool(cfg_get(cfg, ["pseudo_ground_truth", "exclude_same_song"], True)),
-        exclude_same_artist=bool(cfg_get(cfg, ["pseudo_ground_truth", "exclude_same_artist"], True)),
-        graded_enabled=bool(cfg_get(cfg, ["pseudo_ground_truth", "graded_relevance", "enabled"], True)),
-        grade_if_same_genre_and_within_year=int(cfg_get(cfg, ["pseudo_ground_truth", "graded_relevance", "grade_if_same_genre_and_within_year"], 2)),
-        grade_if_same_genre_only=int(cfg_get(cfg, ["pseudo_ground_truth", "graded_relevance", "grade_if_same_genre_only"], 0)),
-        max_grade1_per_query=int(cfg_get(cfg, ["pseudo_ground_truth", "graded_relevance", "max_grade1_per_query"], 0)),
-        song_id_col="song_id",
-        artist_col="artist",
-        year_col="year",
-        genre_col="genre",
-    )
+    k_values = tuple(int(x) for x in cfg_get(cfg, ["eval", "k_values"], [5, 10, 20]))
+    eval_cfg = _safe_dataclass_init(EvalConfig, k_values=k_values)
+    pseudo_kwargs = {
+        "year_window": cfg_get(cfg, ["pseudo_ground_truth", "year_window"], 10),
+        "require_same_genre": bool(cfg_get(cfg, ["pseudo_ground_truth", "require_same_genre"], True)),
+        "exclude_self": bool(cfg_get(cfg, ["pseudo_ground_truth", "exclude_same_song"], True)),
+        "exclude_same_artist": bool(cfg_get(cfg, ["pseudo_ground_truth", "exclude_same_artist"], True)),
+        "graded_enabled": bool(cfg_get(cfg, ["pseudo_ground_truth", "graded_relevance", "enabled"], True)),
+        "grade_if_same_genre_and_within_year": int(
+            cfg_get(cfg, ["pseudo_ground_truth", "graded_relevance", "grade_if_same_genre_and_within_year"], 2)
+        ),
+        "grade_if_same_genre_only": int(
+            cfg_get(cfg, ["pseudo_ground_truth", "graded_relevance", "grade_if_same_genre_only"], 0)
+        ),
+        "max_grade1_per_query": int(
+            cfg_get(cfg, ["pseudo_ground_truth", "graded_relevance", "max_grade1_per_query"], 0)
+        ),
+        "song_id_col": "song_id",
+        "artist_col": "artist",
+        "year_col": "year",
+        "genre_col": "genre",
+    }
+    pseudo_cfg = _safe_dataclass_init(PseudoGTConfig, **pseudo_kwargs)
     evaluate_from_rec_table(
         meta_df,
         rec_df,

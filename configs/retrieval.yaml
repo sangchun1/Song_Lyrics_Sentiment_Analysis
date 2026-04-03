@@ -14,17 +14,21 @@ retrieval:
   similarity: cosine
   top_m: 200
   top_k: 20
-
   mmr:
     enabled: true
     lambda: 0.7
     similarity: cosine
     min_candidates: 50
+  fusion:
+    method: weighted_rrf
+    rrf_k: 60
 
 filters:
   exclude_same_song: true
   exclude_same_artist: false
   year_window: null
+  dedup_query_equivalents: true
+  oversample_factor: 3
 
 outputs:
   results_name: retrieval_results

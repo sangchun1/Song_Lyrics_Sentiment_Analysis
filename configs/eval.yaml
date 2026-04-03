@@ -1,6 +1,7 @@
-# configs/eval.yaml (recommended defaults)
-# Dev-friendly defaults for fast iteration on 500k-scale data.
-# - If you want final reporting runs, bump n_queries to 500~800 or more.
+# configs/eval.yaml
+# Recommended defaults for development / reporting.
+# Keep pseudo-ground-truth policy aligned with configs/retrieval.yaml
+# so recommendation filtering and evaluation interpret the same candidate space.
 
 eval:
   seed: 42

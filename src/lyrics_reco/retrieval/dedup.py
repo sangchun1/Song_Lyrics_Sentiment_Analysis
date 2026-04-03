@@ -1,4 +1,5 @@
 # src/lyrics_reco/retrieval/dedup.py
+
 from __future__ import annotations
 
 import re
@@ -10,7 +11,6 @@ import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import linear_kernel
-
 
 _VERSION_PATTERNS = [
     r"\bremix\b",
@@ -27,12 +27,17 @@ _VERSION_PATTERNS = [
     r"\bradio\s+edit\b",
     r"\bsped\s*up\b",
     r"\bslowed(?:\s*down)?\b",
+    r"\bflip\b",
+    r"\bbootleg\b",
+    r"\brework\b",
+    r"\bmashup\b",
+    r"\btribute\b",
+    r"\breprise\b",
+    r"\binterlude\s+version\b",
 ]
-
 _VERSION_REGEX = re.compile("|".join(_VERSION_PATTERNS), flags=re.IGNORECASE)
 _BRACKET_REGEX = re.compile(r"\([^)]*\)|\[[^\]]*\]|\{[^}]*\}")
-_FEAT_TRAIL_REGEX = re.compile(r"\b(?:feat|ft)\.?\b.*$", flags=re.IGNORECASE)
-
+_FEAT_TRAIL_REGEX = re.compile(r"\b(?:feat|ft)\.?(?:\s+|$).*?$", flags=re.IGNORECASE)
 
 @dataclass(frozen=True)
 class DedupConfig:
@@ -43,13 +48,13 @@ class DedupConfig:
     # title-based suspicion
     title_subset_overlap_thr: float = 1.0
     min_title_chars: int = 3
+    cross_artist_same_title_version_min_tokens: int = 2
 
     # lyric similarity thresholds
     exact_lyric_thr: float = 0.90
     same_title_lyric_thr: float = 0.75
     version_lyric_thr: float = 0.60
     same_artist_same_title_lyric_thr: float = 0.55
-
 
 def _safe_text(x: object) -> str:
     if x is None:
@@ -60,18 +65,19 @@ def _safe_text(x: object) -> str:
         return ""
     return str(x)
 
-
 def _normalize_ws(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
-
 
 def _strip_brackets(text: str) -> str:
     return _BRACKET_REGEX.sub(" ", text)
 
-
 def _contains_version_keyword(text: str) -> bool:
     return bool(_VERSION_REGEX.search(_safe_text(text)))
 
+def _same_artist(a: object, b: object) -> bool:
+    a_text = _safe_text(a).strip().casefold()
+    b_text = _safe_text(b).strip().casefold()
+    return bool(a_text) and a_text == b_text
 
 def canonical_title(title: object) -> str:
     text = unicodedata.normalize("NFKC", _safe_text(title)).casefold()
@@ -84,11 +90,9 @@ def canonical_title(title: object) -> str:
     text = _normalize_ws(text)
     return text
 
-
 def _title_tokens(title: object) -> set[str]:
     canon = canonical_title(title)
     return {tok for tok in canon.split() if tok}
-
 
 def _title_subset_overlap(a: object, b: object) -> float:
     ta = _title_tokens(a)
@@ -98,13 +102,11 @@ def _title_subset_overlap(a: object, b: object) -> float:
     inter = len(ta & tb)
     return float(inter) / float(min(len(ta), len(tb)))
 
-
 def _normalize_lyrics(text: object) -> str:
     out = unicodedata.normalize("NFKC", _safe_text(text)).casefold()
     out = _strip_brackets(out)
     out = re.sub(r"\s+", " ", out)
     return out.strip()
-
 
 def _lyric_similarities(query_lyrics: str, cand_lyrics: list[str]) -> np.ndarray:
     if not query_lyrics.strip():
@@ -121,12 +123,10 @@ def _lyric_similarities(query_lyrics: str, cand_lyrics: list[str]) -> np.ndarray
         sublinear_tf=True,
         min_df=1,
     )
-
     corpus = [query_lyrics] + cand_lyrics
     X = vectorizer.fit_transform(corpus)
     sims = linear_kernel(X[0:1], X[1:]).ravel()
     return np.asarray(sims, dtype=float)
-
 
 def _is_query_equivalent(
     *,
@@ -139,15 +139,11 @@ def _is_query_equivalent(
 ) -> bool:
     q_canon = canonical_title(query_title)
     c_canon = canonical_title(cand_title)
-
     same_title = bool(q_canon) and (q_canon == c_canon)
     title_subset_overlap = _title_subset_overlap(query_title, cand_title)
     has_version_keyword = _contains_version_keyword(cand_title)
-    same_artist = (
-        bool(_safe_text(query_artist).strip())
-        and _safe_text(query_artist).strip().casefold()
-        == _safe_text(cand_artist).strip().casefold()
-    )
+    same_artist = _same_artist(query_artist, cand_artist)
+    q_title_token_count = len(_title_tokens(query_title))
 
     # 1) title와 무관하게 가사가 거의 같은 경우
     if np.isfinite(lyric_sim) and lyric_sim >= cfg.exact_lyric_thr:
@@ -158,7 +154,7 @@ def _is_query_equivalent(
         return True
 
     # 3) cover/remix/live/acoustic 같은 버전 키워드가 있고,
-    #    제목이 query title을 거의 포함하면서 가사도 비슷한 경우
+    # 제목이 query title을 거의 포함하면서 가사도 비슷한 경우
     if (
         has_version_keyword
         and title_subset_overlap >= cfg.title_subset_overlap_thr
@@ -180,8 +176,18 @@ def _is_query_equivalent(
     if same_artist and same_title and has_version_keyword:
         return True
 
-    return False
+    # 6) cross-artist라도 multi-token 제목이 같고 version keyword가 있으면
+    # cover / tribute / remix 변형일 가능성이 높으므로 더 공격적으로 제외
+    # 단, "Stay", "Hello" 같은 흔한 1-token 제목의 과도한 차단은 피한다.
+    if (
+        (not same_artist)
+        and same_title
+        and has_version_keyword
+        and q_title_token_count >= cfg.cross_artist_same_title_version_min_tokens
+    ):
+        return True
 
+    return False
 
 def filter_query_equivalent_candidates(
     meta_df: pd.DataFrame,
@@ -195,19 +201,19 @@ def filter_query_equivalent_candidates(
     Remove query-equivalent songs from a candidate pool.
 
     Intended usage:
-        topk_cosine -> filter_query_equivalent_candidates -> mmr_rerank
+
+    topk_cosine -> filter_query_equivalent_candidates -> mmr_rerank
 
     Query-equivalent means:
+
     - the same song
     - cover/remix/live/acoustic/remaster variants
     - near-duplicate lyric versions
     """
     if len(cand_indices) != len(cand_scores):
         raise ValueError("cand_indices and cand_scores must have same length")
-
     if len(cand_indices) == 0:
         return cand_indices, cand_scores
-
     if cfg.title_col not in meta_df.columns:
         return cand_indices, cand_scores
 
@@ -230,11 +236,12 @@ def filter_query_equivalent_candidates(
     )
 
     q_canon = canonical_title(q_title)
-
+    q_title_token_count = len(_title_tokens(q_title))
     suspect_mask = []
-    for title in cand_titles:
+    for title, artist in zip(cand_titles, cand_artists):
         c_canon = canonical_title(title)
         subset_overlap = _title_subset_overlap(q_title, title)
+        same_artist = _same_artist(q_artist, artist)
         suspect = False
 
         if q_canon and c_canon and q_canon == c_canon:
@@ -246,11 +253,18 @@ def filter_query_equivalent_candidates(
             and subset_overlap >= cfg.title_subset_overlap_thr
         ):
             suspect = True
+        elif (
+            q_canon
+            and c_canon
+            and q_canon == c_canon
+            and _contains_version_keyword(title)
+            and (same_artist or q_title_token_count >= cfg.cross_artist_same_title_version_min_tokens)
+        ):
+            suspect = True
 
         suspect_mask.append(suspect)
 
     suspect_mask = np.asarray(suspect_mask, dtype=bool)
-
     if not suspect_mask.any():
         return cand_indices, cand_scores
 
@@ -259,7 +273,6 @@ def filter_query_equivalent_candidates(
     suspect_sims = _lyric_similarities(q_lyrics, suspect_lyrics)
 
     keep = np.ones(len(cand_indices), dtype=bool)
-
     for local_idx, pos in enumerate(suspect_positions):
         lyric_sim = float(suspect_sims[local_idx])
         if _is_query_equivalent(

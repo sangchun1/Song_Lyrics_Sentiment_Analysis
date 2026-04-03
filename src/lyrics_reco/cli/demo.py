@@ -61,7 +61,7 @@ else:
     REPO_ROOT = Path(__file__).resolve().parents[3]
 
 from lyrics_reco.retrieval.cosine import topk_cosine
-from lyrics_reco.retrieval.dedup import filter_query_equivalent_candidates
+from lyrics_reco.retrieval.dedup import DedupConfig, filter_query_equivalent_candidates
 from lyrics_reco.retrieval.mmr import mmr_rerank
 
 
@@ -208,6 +208,76 @@ def _safe_float(v: Any) -> float:
 
 
 
+def _resolve_lyrics_col(df: pd.DataFrame) -> Optional[str]:
+    for col in ["lyrics_dedup", "lyrics_clean", "lyrics"]:
+        if col in df.columns:
+            return col
+    return None
+
+
+def _emotion_matrix_qc(emotion_matrix: np.ndarray) -> dict[str, float]:
+    X = np.asarray(emotion_matrix, dtype=np.float32)
+    if X.ndim != 2 or X.size == 0:
+        return {
+            "dim": float("nan"),
+            "nonzero_row_ratio": float("nan"),
+            "mean_norm": float("nan"),
+            "max_abs": float("nan"),
+        }
+    row_nonzero = np.any(np.abs(X) > 1e-8, axis=1)
+    row_norms = np.linalg.norm(X, axis=1)
+    return {
+        "dim": float(X.shape[1]),
+        "nonzero_row_ratio": float(np.mean(row_nonzero)) if len(row_nonzero) else float("nan"),
+        "mean_norm": float(np.mean(row_norms)) if len(row_norms) else float("nan"),
+        "max_abs": float(np.max(np.abs(X))) if X.size else float("nan"),
+    }
+
+
+def _top_profile_items(
+    cols: Sequence[str],
+    values: np.ndarray,
+    *,
+    top_n: int = 5,
+) -> list[tuple[str, float]]:
+    vec = np.asarray(values, dtype=np.float32).ravel()
+    if vec.size == 0:
+        return []
+    ratio_pairs = [
+        (str(col), float(vec[i]))
+        for i, col in enumerate(cols)
+        if i < vec.size and str(col).startswith("ratio_")
+    ]
+    if ratio_pairs:
+        ratio_pairs.sort(key=lambda x: x[1], reverse=True)
+        return ratio_pairs[:top_n]
+    generic_pairs = [(str(col), float(vec[i])) for i, col in enumerate(cols[: vec.size])]
+    generic_pairs.sort(key=lambda x: abs(x[1]), reverse=True)
+    return generic_pairs[:top_n]
+
+
+def _format_profile_items(items: Sequence[tuple[str, float]]) -> str:
+    if not items:
+        return ""
+    return ", ".join(f"{name}={value:.4f}" for name, value in items)
+
+
+def _print_emotion_profile(
+    label: str,
+    cols: Sequence[str],
+    values: np.ndarray,
+    *,
+    top_n: int = 5,
+) -> None:
+    items = _top_profile_items(cols, values, top_n=top_n)
+    if not items:
+        print(f"{label}: (no emotion features)")
+        return
+    print(f"{label}: {_format_profile_items(items)}")
+
+
+
+
 def _print_table(title: str, df: pd.DataFrame) -> None:
     print(f"\n{'=' * 100}")
     print(title)
@@ -231,6 +301,7 @@ def _print_table(title: str, df: pd.DataFrame) -> None:
             "model_score",
             "emotion_similarity",
             "emotion_similarity_pct",
+            "rec_top_emotions",
         ]
         if c in view.columns
     ]
@@ -668,6 +739,7 @@ class ModelOutput:
 
 
 
+
 def _recommend_indices(
     meta_df: pd.DataFrame,
     dedup_df: pd.DataFrame,
@@ -678,14 +750,18 @@ def _recommend_indices(
     top_m: int,
     use_mmr: bool,
     mmr_lambda: float,
+    dedup_query_equivalents: bool,
+    oversample_factor: int,
+    dedup_cfg: Optional[DedupConfig],
 ) -> tuple[np.ndarray, np.ndarray]:
     candidate_count = max(int(k), int(top_m))
+    oversample = max(int(oversample_factor), 1)
 
     # dedup 이후에도 후보가 충분히 남도록 넉넉하게 먼저 뽑습니다.
     n_rows = int(X.shape[0])
     retrieval_count = min(
         n_rows - 1 if n_rows > 1 else 1,
-        max(candidate_count * 5, candidate_count + 50),
+        max(candidate_count * oversample, candidate_count + 50),
     )
 
     cand_idx, cand_sc = topk_cosine(
@@ -697,13 +773,15 @@ def _recommend_indices(
     )
     if cand_idx.size == 0:
         return cand_idx, cand_sc
-    
-    cand_idx, cand_sc = filter_query_equivalent_candidates(
-        meta_df=dedup_df,
-        query_index=int(query_index),
-        cand_indices=cand_idx,
-        cand_scores=cand_sc,
-    )
+
+    if dedup_query_equivalents:
+        cand_idx, cand_sc = filter_query_equivalent_candidates(
+            meta_df=dedup_df,
+            query_index=int(query_index),
+            cand_indices=cand_idx,
+            cand_scores=cand_sc,
+            cfg=dedup_cfg,
+        )
 
     if cand_idx.size == 0:
         return cand_idx, cand_sc
@@ -723,10 +801,14 @@ def _recommend_indices(
 
 
 
+
+
+
 def _build_output_table(
     model_name: str,
     meta_df: pd.DataFrame,
     emotion_matrix: np.ndarray,
+    emotion_cols: Sequence[str],
     query_index: int,
     rec_indices: np.ndarray,
     rec_scores: np.ndarray,
@@ -735,10 +817,12 @@ def _build_output_table(
     rows: list[dict[str, Any]] = []
 
     q_emotion = emotion_matrix[int(query_index)]
+    query_top_emotions = _format_profile_items(_top_profile_items(emotion_cols, q_emotion))
 
     for rank, (ri, score) in enumerate(zip(rec_indices.tolist(), rec_scores.tolist()), start=1):
         rec_row = meta_df.iloc[int(ri)]
-        emo_sim = _cosine_pair(q_emotion, emotion_matrix[int(ri)])
+        rec_emotion = emotion_matrix[int(ri)]
+        emo_sim = _cosine_pair(q_emotion, rec_emotion)
         row = {
             "model": model_name,
             "query_song_id": query_row.get("song_id"),
@@ -753,6 +837,8 @@ def _build_output_table(
             "model_score": float(score),
             "emotion_similarity": float(emo_sim),
             "emotion_similarity_pct": float(emo_sim * 100.0),
+            "query_top_emotions": query_top_emotions,
+            "rec_top_emotions": _format_profile_items(_top_profile_items(emotion_cols, rec_emotion)),
         }
         if "year" in meta_df.columns:
             try:
@@ -765,6 +851,9 @@ def _build_output_table(
 
 
 
+
+
+
 def run_one_model(
     *,
     model_name: str,
@@ -773,11 +862,15 @@ def run_one_model(
     meta_df: pd.DataFrame,
     dedup_df: pd.DataFrame,
     emotion_matrix: np.ndarray,
+    emotion_cols: Sequence[str],
     source_path: Path,
     k: int,
     top_m: int,
     use_mmr: bool,
     mmr_lambda: float,
+    dedup_query_equivalents: bool,
+    oversample_factor: int,
+    dedup_cfg: Optional[DedupConfig],
 ) -> ModelOutput:
     idx, sc = _recommend_indices(
         meta_df,
@@ -788,8 +881,19 @@ def run_one_model(
         top_m=top_m,
         use_mmr=use_mmr,
         mmr_lambda=mmr_lambda,
+        dedup_query_equivalents=dedup_query_equivalents,
+        oversample_factor=oversample_factor,
+        dedup_cfg=dedup_cfg,
     )
-    table = _build_output_table(model_name, meta_df, emotion_matrix, query_index, idx, sc)
+    table = _build_output_table(
+        model_name,
+        meta_df,
+        emotion_matrix,
+        emotion_cols,
+        query_index,
+        idx,
+        sc,
+    )
     return ModelOutput(
         name=model_name,
         table=table,
@@ -798,6 +902,8 @@ def run_one_model(
         top_m=top_m,
         k=k,
     )
+
+
 
 
 # -----------------------------------------------------------------------------
@@ -869,6 +975,18 @@ def parse_args() -> argparse.Namespace:
         help="Disable MMR for proposed model",
     )
     r.add_argument("--proposed-lambda", type=float, default=0.7, help="Proposed MMR lambda")
+    r.add_argument(
+        "--disable-dedup",
+        action="store_true",
+        default=False,
+        help="Disable query-equivalent dedup (remix/cover/live/near-duplicate filtering)",
+    )
+    r.add_argument(
+        "--oversample-factor",
+        type=int,
+        default=5,
+        help="Retrieve more candidates before dedup/MMR to avoid empty top-k after filtering",
+    )
 
     o = ap.add_argument_group("output")
     o.add_argument("--save-dir", default="artifacts/demo", help="Directory for CSV/JSON outputs")
@@ -965,6 +1083,13 @@ def main() -> None:
         emotion_profiles_df=emotion_profiles_df,
     )
 
+    dedup_cfg = DedupConfig(
+        title_col="title",
+        artist_col="artist",
+        lyrics_col=_resolve_lyrics_col(dedup_df),
+    )
+    emotion_qc = _emotion_matrix_qc(emotion_matrix)
+
     baseline_out = run_one_model(
         model_name="baseline",
         X=baseline.matrix,
@@ -972,11 +1097,15 @@ def main() -> None:
         meta_df=meta_df,
         dedup_df=dedup_df,
         emotion_matrix=emotion_matrix,
+        emotion_cols=emotion_cols,
         source_path=baseline.source_path,
         k=args.k,
         top_m=args.top_m,
         use_mmr=bool(args.baseline_use_mmr),
         mmr_lambda=float(args.baseline_lambda),
+        dedup_query_equivalents=not bool(args.disable_dedup),
+        oversample_factor=int(args.oversample_factor),
+        dedup_cfg=dedup_cfg,
     )
     proposed_out = run_one_model(
         model_name="proposed",
@@ -985,11 +1114,15 @@ def main() -> None:
         meta_df=meta_df,
         dedup_df=dedup_df,
         emotion_matrix=emotion_matrix,
+        emotion_cols=emotion_cols,
         source_path=proposed.source_path,
         k=args.k,
         top_m=args.top_m,
         use_mmr=not bool(args.proposed_disable_mmr),
         mmr_lambda=float(args.proposed_lambda),
+        dedup_query_equivalents=not bool(args.disable_dedup),
+        oversample_factor=int(args.oversample_factor),
+        dedup_cfg=dedup_cfg,
     )
 
     query_row = meta_df.iloc[int(query_index)]
@@ -1030,10 +1163,14 @@ def main() -> None:
             "source": emotion_source,
             "columns": emotion_cols,
             "mode": args.emotion_space,
+            "qc": emotion_qc,
         },
         "retrieval": {
             "k": int(args.k),
             "top_m": int(args.top_m),
+            "dedup_query_equivalents": not bool(args.disable_dedup),
+            "oversample_factor": int(args.oversample_factor),
+            "dedup_lyrics_col": dedup_cfg.lyrics_col or "",
             "baseline_use_mmr": bool(args.baseline_use_mmr),
             "baseline_lambda": float(args.baseline_lambda),
             "proposed_use_mmr": not bool(args.proposed_disable_mmr),
@@ -1057,6 +1194,22 @@ def main() -> None:
     print(f"Saved baseline    : {baseline_csv}")
     print(f"Saved proposed    : {proposed_csv}")
     print(f"Saved summary     : {summary_json}")
+
+    if emotion_source == "proposed_tail":
+        dim_str = int(emotion_qc["dim"]) if pd.notna(emotion_qc["dim"]) else "NA"
+        print(
+            "[WARN] Emotion similarity is using proposed tail fallback "
+            f"(dim={dim_str}, "
+            f"nonzero_row_ratio={emotion_qc['nonzero_row_ratio']:.4f}, "
+            f"mean_norm={emotion_qc['mean_norm']:.4f}, "
+            f"max_abs={emotion_qc['max_abs']:.4f})"
+        )
+    _print_emotion_profile(
+        "[Query emotion profile]",
+        emotion_cols,
+        emotion_matrix[int(query_index)],
+        top_n=min(5, len(emotion_cols)),
+    )
 
     _print_table("[BASELINE] Recommendations", baseline_out.table)
     _print_table("[PROPOSED] Recommendations", proposed_out.table)
