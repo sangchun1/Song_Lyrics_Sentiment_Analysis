@@ -1,5 +1,3 @@
-# src/lyrics_reco/retrieval/dedup.py
-
 from __future__ import annotations
 
 import re
@@ -39,22 +37,33 @@ _VERSION_REGEX = re.compile("|".join(_VERSION_PATTERNS), flags=re.IGNORECASE)
 _BRACKET_REGEX = re.compile(r"\([^)]*\)|\[[^\]]*\]|\{[^}]*\}")
 _FEAT_TRAIL_REGEX = re.compile(r"\b(?:feat|ft)\.?(?:\s+|$).*?$", flags=re.IGNORECASE)
 
+
 @dataclass(frozen=True)
 class DedupConfig:
     title_col: str = "title"
     artist_col: str = "artist"
-    lyrics_col: str = "lyrics_dedup"
+    lyrics_col: str = "lyrics_clean"
+    lyric_compare_cols: Tuple[str, ...] = ("lyrics_clean", "lyrics_dedup", "lyrics")
 
-    # title-based suspicion
+    # title-based suspicion / fallback
     title_subset_overlap_thr: float = 1.0
     min_title_chars: int = 3
     cross_artist_same_title_version_min_tokens: int = 2
 
     # lyric similarity thresholds
-    exact_lyric_thr: float = 0.90
-    same_title_lyric_thr: float = 0.75
-    version_lyric_thr: float = 0.60
-    same_artist_same_title_lyric_thr: float = 0.55
+    exact_lyric_thr: float = 0.85
+    same_title_lyric_thr: float = 0.55
+    version_lyric_thr: float = 0.35
+    same_artist_same_title_lyric_thr: float = 0.45
+
+    # line-overlap thresholds (lyrics-first dedup)
+    exact_line_overlap_thr: float = 0.85
+    same_title_line_overlap_thr: float = 0.45
+    version_line_overlap_thr: float = 0.30
+    same_artist_same_title_line_overlap_thr: float = 0.25
+    min_line_tokens: int = 3
+    min_line_chars: int = 8
+
 
 def _safe_text(x: object) -> str:
     if x is None:
@@ -65,19 +74,24 @@ def _safe_text(x: object) -> str:
         return ""
     return str(x)
 
+
 def _normalize_ws(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
 
 def _strip_brackets(text: str) -> str:
     return _BRACKET_REGEX.sub(" ", text)
 
+
 def _contains_version_keyword(text: str) -> bool:
     return bool(_VERSION_REGEX.search(_safe_text(text)))
+
 
 def _same_artist(a: object, b: object) -> bool:
     a_text = _safe_text(a).strip().casefold()
     b_text = _safe_text(b).strip().casefold()
     return bool(a_text) and a_text == b_text
+
 
 def canonical_title(title: object) -> str:
     text = unicodedata.normalize("NFKC", _safe_text(title)).casefold()
@@ -90,9 +104,11 @@ def canonical_title(title: object) -> str:
     text = _normalize_ws(text)
     return text
 
+
 def _title_tokens(title: object) -> set[str]:
     canon = canonical_title(title)
     return {tok for tok in canon.split() if tok}
+
 
 def _title_subset_overlap(a: object, b: object) -> float:
     ta = _title_tokens(a)
@@ -102,11 +118,48 @@ def _title_subset_overlap(a: object, b: object) -> float:
     inter = len(ta & tb)
     return float(inter) / float(min(len(ta), len(tb)))
 
-def _normalize_lyrics(text: object) -> str:
+
+def _normalize_lyrics_lines(text: object) -> str:
     out = unicodedata.normalize("NFKC", _safe_text(text)).casefold()
     out = _strip_brackets(out)
-    out = re.sub(r"\s+", " ", out)
-    return out.strip()
+    out = out.replace("\r\n", "\n").replace("\r", "\n")
+    out = re.sub(r"[^\S\n]+", " ", out)
+    lines = [_normalize_ws(line) for line in out.split("\n")]
+    lines = [line for line in lines if line]
+    return "\n".join(lines)
+
+
+def _lyrics_for_similarity(text: object) -> str:
+    return _normalize_ws(_normalize_lyrics_lines(text).replace("\n", " "))
+
+
+def _line_set(text: object, *, min_tokens: int, min_chars: int) -> set[str]:
+    lines = _normalize_lyrics_lines(text).split("\n")
+    out = set()
+    for line in lines:
+        if not line:
+            continue
+        if len(line) < min_chars:
+            continue
+        if len(line.split()) < min_tokens:
+            continue
+        out.add(line)
+    return out
+
+
+def _line_overlap_ratio(
+    query_lyrics: object,
+    cand_lyrics: object,
+    *,
+    min_tokens: int,
+    min_chars: int,
+) -> float:
+    q_lines = _line_set(query_lyrics, min_tokens=min_tokens, min_chars=min_chars)
+    c_lines = _line_set(cand_lyrics, min_tokens=min_tokens, min_chars=min_chars)
+    if not q_lines or not c_lines:
+        return np.nan
+    return float(len(q_lines & c_lines)) / float(min(len(q_lines), len(c_lines)))
+
 
 def _lyric_similarities(query_lyrics: str, cand_lyrics: list[str]) -> np.ndarray:
     if not query_lyrics.strip():
@@ -128,6 +181,25 @@ def _lyric_similarities(query_lyrics: str, cand_lyrics: list[str]) -> np.ndarray
     sims = linear_kernel(X[0:1], X[1:]).ravel()
     return np.asarray(sims, dtype=float)
 
+
+def _resolve_lyric_cols(meta_df: pd.DataFrame, cfg: DedupConfig) -> list[str]:
+    cols: list[str] = []
+    for col in (cfg.lyrics_col, *cfg.lyric_compare_cols):
+        if col in meta_df.columns and col not in cols:
+            cols.append(col)
+    return cols
+
+
+def _nanmax_rows(arrays: list[np.ndarray], *, n: int) -> np.ndarray:
+    if not arrays:
+        return np.full(n, np.nan, dtype=float)
+    stack = np.vstack(arrays)
+    out = np.nanmax(stack, axis=0)
+    all_nan = np.all(np.isnan(stack), axis=0)
+    out[all_nan] = np.nan
+    return out.astype(float)
+
+
 def _is_query_equivalent(
     *,
     query_title: str,
@@ -135,6 +207,7 @@ def _is_query_equivalent(
     query_artist: str,
     cand_artist: str,
     lyric_sim: float,
+    line_overlap: float,
     cfg: DedupConfig,
 ) -> bool:
     q_canon = canonical_title(query_title)
@@ -145,49 +218,51 @@ def _is_query_equivalent(
     same_artist = _same_artist(query_artist, cand_artist)
     q_title_token_count = len(_title_tokens(query_title))
 
+    lyric_ok = np.isfinite(lyric_sim)
+    overlap_ok = np.isfinite(line_overlap)
+
     # 1) title와 무관하게 가사가 거의 같은 경우
-    if np.isfinite(lyric_sim) and lyric_sim >= cfg.exact_lyric_thr:
+    if lyric_ok and lyric_sim >= cfg.exact_lyric_thr:
+        return True
+    if overlap_ok and line_overlap >= cfg.exact_line_overlap_thr:
         return True
 
-    # 2) canonical title이 같은데 가사도 충분히 비슷한 경우
-    if same_title and np.isfinite(lyric_sim) and lyric_sim >= cfg.same_title_lyric_thr:
-        return True
+    # 2) canonical title이 같고 가사나 핵심 라인이 충분히 비슷한 경우
+    if same_title:
+        if lyric_ok and lyric_sim >= cfg.same_title_lyric_thr:
+            return True
+        if overlap_ok and line_overlap >= cfg.same_title_line_overlap_thr:
+            return True
 
-    # 3) cover/remix/live/acoustic 같은 버전 키워드가 있고,
-    # 제목이 query title을 거의 포함하면서 가사도 비슷한 경우
-    if (
-        has_version_keyword
-        and title_subset_overlap >= cfg.title_subset_overlap_thr
-        and np.isfinite(lyric_sim)
-        and lyric_sim >= cfg.version_lyric_thr
-    ):
-        return True
+    # 3) version keyword가 있는 변형은 lyrics 기준으로 더 공격적으로 제거
+    if has_version_keyword and title_subset_overlap >= cfg.title_subset_overlap_thr:
+        if lyric_ok and lyric_sim >= cfg.version_lyric_thr:
+            return True
+        if overlap_ok and line_overlap >= cfg.version_line_overlap_thr:
+            return True
 
     # 4) 같은 아티스트 + 같은 canonical title이면 같은 곡 변형일 가능성이 높음
-    if (
-        same_artist
-        and same_title
-        and np.isfinite(lyric_sim)
-        and lyric_sim >= cfg.same_artist_same_title_lyric_thr
-    ):
-        return True
+    if same_artist and same_title:
+        if lyric_ok and lyric_sim >= cfg.same_artist_same_title_lyric_thr:
+            return True
+        if overlap_ok and line_overlap >= cfg.same_artist_same_title_line_overlap_thr:
+            return True
 
-    # 5) lyrics가 비어 있어도, same artist + same title + version keyword면 제외
-    if same_artist and same_title and has_version_keyword:
-        return True
-
-    # 6) cross-artist라도 multi-token 제목이 같고 version keyword가 있으면
-    # cover / tribute / remix 변형일 가능성이 높으므로 더 공격적으로 제외
-    # 단, "Stay", "Hello" 같은 흔한 1-token 제목의 과도한 차단은 피한다.
-    if (
-        (not same_artist)
-        and same_title
-        and has_version_keyword
-        and q_title_token_count >= cfg.cross_artist_same_title_version_min_tokens
-    ):
-        return True
+    # 5) lyrics가 비어 있을 때만 쓰는 fallback title rules
+    if (not lyric_ok) and (not overlap_ok):
+        if same_artist and same_title and has_version_keyword:
+            return True
+        if (
+            (not same_artist)
+            and same_title
+            and has_version_keyword
+            and q_title_token_count >= cfg.cross_artist_same_title_version_min_tokens
+        ):
+            return True
 
     return False
+
+
 
 def filter_query_equivalent_candidates(
     meta_df: pd.DataFrame,
@@ -220,7 +295,6 @@ def filter_query_equivalent_candidates(
     q_row = meta_df.iloc[int(query_index)]
     q_title = _safe_text(q_row.get(cfg.title_col, ""))
     q_artist = _safe_text(q_row.get(cfg.artist_col, ""))
-    q_lyrics = _normalize_lyrics(q_row.get(cfg.lyrics_col, ""))
 
     cand_rows = meta_df.iloc[cand_indices]
     cand_titles = cand_rows[cfg.title_col].fillna("").astype(str).tolist()
@@ -229,58 +303,49 @@ def filter_query_equivalent_candidates(
         if cfg.artist_col in cand_rows.columns
         else [""] * len(cand_indices)
     )
-    cand_lyrics = (
-        cand_rows[cfg.lyrics_col].fillna("").astype(str).map(_normalize_lyrics).tolist()
-        if cfg.lyrics_col in cand_rows.columns
-        else [""] * len(cand_indices)
-    )
 
-    q_canon = canonical_title(q_title)
-    q_title_token_count = len(_title_tokens(q_title))
-    suspect_mask = []
-    for title, artist in zip(cand_titles, cand_artists):
-        c_canon = canonical_title(title)
-        subset_overlap = _title_subset_overlap(q_title, title)
-        same_artist = _same_artist(q_artist, artist)
-        suspect = False
+    lyric_cols = _resolve_lyric_cols(meta_df, cfg)
+    lyric_sims_all: list[np.ndarray] = []
+    line_overlaps_all: list[np.ndarray] = []
+    n_cands = len(cand_indices)
 
-        if q_canon and c_canon and q_canon == c_canon:
-            suspect = True
-        elif (
-            len(q_canon) >= cfg.min_title_chars
-            and len(c_canon) >= cfg.min_title_chars
-            and _contains_version_keyword(title)
-            and subset_overlap >= cfg.title_subset_overlap_thr
-        ):
-            suspect = True
-        elif (
-            q_canon
-            and c_canon
-            and q_canon == c_canon
-            and _contains_version_keyword(title)
-            and (same_artist or q_title_token_count >= cfg.cross_artist_same_title_version_min_tokens)
-        ):
-            suspect = True
+    for col in lyric_cols:
+        q_lyrics_lines = _normalize_lyrics_lines(q_row.get(col, ""))
+        q_lyrics_for_sim = _lyrics_for_similarity(q_lyrics_lines)
 
-        suspect_mask.append(suspect)
+        cand_col_lines = (
+            cand_rows[col].fillna("").astype(str).map(_normalize_lyrics_lines).tolist()
+        )
+        cand_col_for_sim = [_lyrics_for_similarity(text) for text in cand_col_lines]
 
-    suspect_mask = np.asarray(suspect_mask, dtype=bool)
-    if not suspect_mask.any():
-        return cand_indices, cand_scores
+        lyric_sims_all.append(_lyric_similarities(q_lyrics_for_sim, cand_col_for_sim))
+        line_overlaps_all.append(
+            np.asarray(
+                [
+                    _line_overlap_ratio(
+                        q_lyrics_lines,
+                        cand_text,
+                        min_tokens=cfg.min_line_tokens,
+                        min_chars=cfg.min_line_chars,
+                    )
+                    for cand_text in cand_col_lines
+                ],
+                dtype=float,
+            )
+        )
 
-    suspect_positions = np.flatnonzero(suspect_mask)
-    suspect_lyrics = [cand_lyrics[pos] for pos in suspect_positions]
-    suspect_sims = _lyric_similarities(q_lyrics, suspect_lyrics)
+    max_lyric_sims = _nanmax_rows(lyric_sims_all, n=n_cands)
+    max_line_overlaps = _nanmax_rows(line_overlaps_all, n=n_cands)
 
     keep = np.ones(len(cand_indices), dtype=bool)
-    for local_idx, pos in enumerate(suspect_positions):
-        lyric_sim = float(suspect_sims[local_idx])
+    for pos in range(len(cand_indices)):
         if _is_query_equivalent(
             query_title=q_title,
             cand_title=cand_titles[pos],
             query_artist=q_artist,
             cand_artist=cand_artists[pos],
-            lyric_sim=lyric_sim,
+            lyric_sim=float(max_lyric_sims[pos]),
+            line_overlap=float(max_line_overlaps[pos]),
             cfg=cfg,
         ):
             keep[pos] = False
