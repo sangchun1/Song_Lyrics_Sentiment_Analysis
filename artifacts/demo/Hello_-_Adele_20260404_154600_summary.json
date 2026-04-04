@@ -1,0 +1,54 @@
+{
+  "query": {
+    "query_index": 53,
+    "song_id": "5b3dd98d09e3741643ef575f3a52b5d58bf1bd0b",
+    "title": "Hello",
+    "artist": "Adele",
+    "year": 2015.0,
+    "genre": "pop"
+  },
+  "paths": {
+    "catalog": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\artifacts\\vectors\\catalog.csv",
+    "data": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\data\\processed\\genius_processed.csv",
+    "emotion_profiles": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\artifacts\\vectors\\emotion_profiles.csv",
+    "baseline_vectors": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\artifacts\\vectors\\baseline_vectors.npz",
+    "baseline_song_ids": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\artifacts\\vectors\\baseline_song_ids.npy",
+    "proposed_vectors": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\artifacts\\vectors\\proposed_vectors.csv",
+    "proposed_song_ids": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\artifacts\\vectors\\proposed_song_ids.npy",
+    "emotion_config": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\configs\\emotion_context.yaml",
+    "baseline_csv": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\artifacts\\demo\\Hello_-_Adele_20260404_154600_baseline_top10.csv",
+    "proposed_csv": "C:\\PARK\\School\\AI_Stat_Lab\\가사 감정 기반 음악 추천\\Song_Lyrics_Sentiment_Analysis\\artifacts\\demo\\Hello_-_Adele_20260404_154600_proposed_top10.csv"
+  },
+  "emotion_similarity": {
+    "source": "emotion_profiles_csv",
+    "columns": [
+      "ratio_anger",
+      "ratio_disgust",
+      "ratio_fear",
+      "ratio_joy",
+      "ratio_sadness",
+      "ratio_trust",
+      "valence",
+      "arousal",
+      "dominance"
+    ],
+    "mode": "ratio_vad",
+    "qc": {
+      "dim": 9.0,
+      "nonzero_row_ratio": 0.9999961220845347,
+      "mean_norm": 0.3507275879383087,
+      "max_abs": 1.0
+    }
+  },
+  "retrieval": {
+    "k": 10,
+    "top_m": 200,
+    "dedup_query_equivalents": true,
+    "oversample_factor": 5,
+    "dedup_lyrics_col": "lyrics_dedup",
+    "baseline_use_mmr": false,
+    "baseline_lambda": 0.7,
+    "proposed_use_mmr": true,
+    "proposed_lambda": 0.7
+  }
+}

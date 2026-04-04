@@ -48,6 +48,7 @@ artifacts/runs/*/baseline_vocab_index.csv
 artifacts/runs/*/proposed_song_features.csv
 *.npz
 *.npy
+artifacts/vectors/emotion_profiles.csv
 
 
 # OS generated files #
